@@ -19,18 +19,28 @@ powered by a vision language model.
 - `manifest.jsonl` 追加式台账记录完整事件流水，`inspect_session.py` 可离线复核
   任何一条信息"来自哪张截图、由哪个模型在什么时间提取"。
 
-**只做信息采集。** 动作集合被限定为点击 / 滑动 / 返回 / 搜索等只读浏览操作，
-不含任何发布、发送、点赞、支付等写操作。
+**只做信息采集。** 只读约束有两层：导航动作集合只含点击 / 滑动 / 返回 /
+搜索等浏览原语；每个动作执行前还经过 **ActionGuard 语义护栏**——模型随
+动作申报意图（intent）与目标元素文字（target_text），命中"发送 / 点赞 /
+支付 / 删除 / 授权"等写操作语义即拒绝执行、反馈模型重新规划，连续拦截
+则终止导航。护栏依据模型申报的语义判定，是纵深防御的一层，而非形式化
+验证——这也是动作集合不含任何写原语的兜底意义所在。
 
 ## 功能特性
 
-- 🤖 **VLM 双角色**：导航 Agent（`do(action=...)` 动作 DSL）负责
+- 🤖 **VLM 双角色**：导航 Agent（`do(action=...)` DSL，兼容 JSON 动作）负责
   在 App 内走到目标页面；提取 Agent 负责把单屏截图转成结构化 JSON。
 - 📱 **通用 App 支持**：内置微信、小红书攻略（`references/`），其他 App 按
   通用模板即可扩展。
+- 🛡️ **只读护栏 + 导航核验**：ActionGuard 拦截写操作语义的点击（含坐标
+  合法性校验）；导航返回结构化结果（成功 / 失败原因 / 步数 / 当前 App），
+  finish 后由模型核验"当前页是否满足目标"，导航失败立即终止会话——
+  不把错误页面的数据当成合法证据入库。
 - 🔍 **全程证据留存**：截屏 → 提取 → 去重 → 台账，结构化目录保存，一条不漏。
-- 🧾 **溯源可校验**：SHA-256 完整性校验，`manifest.jsonl` + `index.json` 双层索引。
-- 🔁 **智能停止**：相邻屏重复率检测 + 最大屏数上限，增量采集不重复劳动。
+- 🧾 **溯源可校验**：SHA-256 完整性校验，`manifest.jsonl` + `index.json` 双层索引；
+  所有落盘走 tmp + fsync + 原子 rename，manifest 逐条 fsync，进程中断不留半个文件。
+- 🔁 **智能停止**：内容零新增 + 画面位移消失（感知哈希）双重判据 + 宽限屏数
+  + 最大屏数上限——长图 / 大卡片跨屏不再被误判为"已到边界"。
 - 🌐 **任意 OpenAI 兼容视觉模型**：提取与导航模型均可通过环境变量配置，
   填入任意支持视觉的模型即可。
 
@@ -44,8 +54,10 @@ powered by a vision language model.
          ┌───────────────────────┼───────────────────────────┐
          ▼                       ▼                           ▼
   StepAgent 导航           SessionStore 证据存储        ExtractAgent 提取
-  (do(action=...) DSL)     (screenshots/manifest)       (VLM, JSON)
-         │                       ▲                           │
+  (DSL/JSON 解析           (screenshots/manifest         (VLM, JSON)
+   + ActionGuard 护栏        /原子落盘)
+   + 目标页核验)                   ▲                           │
+         │                       │                           │
          ▼                       │                           │
   ┌─────────────┐         ┌──────┴───────┐            ┌──────┴──────┐
   │ ADB 设备层   │──────▶ │ Android 手机  │──截屏────▶ │ VLM 云端 API │
@@ -83,7 +95,8 @@ ADB 原生 `input text` 不支持中文，导航 Agent 需要在搜索框输入�
 
 1. 下载安装：从项目 Releases 下载 apk 安装；
 2. 手机启用：设置 → 系统 → 语言和输入法 → 勾选启用 **Adb Keyboard**
-   （无需设为默认——采集器输入时自动切换、结束自动恢复原输入法）；
+   （无需设为默认——采集器以事务方式输入：输入前自动切换到 ADB Keyboard，
+   输入结束或失败后自动恢复原输入法）；
 3. 验证：`adb shell ime list -s | grep adbkeyboard` 有输出。
 
 > 未安装的影响：仅无法完成"搜索进入"类导航（Type 动作失效），纯点击浏览类采集
@@ -185,9 +198,10 @@ app-vision-collector/
 │   ├── collect.py           # 采集 CLI
 │   ├── inspect_session.py   # 溯源校验 CLI
 │   └── collector/           # 核心包
-│       ├── adb/             # ADB 设备层（截图/输入/连接）
-│       ├── agent/           # StepAgent 导航 + ExtractAgent 提取
-│       ├── store/           # SessionStore 证据存储
+│       ├── adb/             # ADB 设备层（截图/输入/连接/输入法事务）
+│       ├── agent/           # StepAgent 导航 + ExtractAgent 提取 + ActionGuard 护栏
+│       ├── store/           # SessionStore 证据存储 + 滑窗去重
+│       ├── imaging.py       # 感知哈希（停止策略的画面位移判据）
 │       └── config.py
 ├── references/              # 各 App 采集攻略（按需阅读）
 ├── docs/                    # 架构 / 数据规范 / 合规

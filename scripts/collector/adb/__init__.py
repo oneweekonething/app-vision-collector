@@ -1,6 +1,7 @@
 """ADB 设备层：连接、截屏、输入。"""
 
 from collector.adb.connection import (
+    AdbCommandError,
     ensure_device,
     get_adb_executable,
     get_current_app,
@@ -11,6 +12,8 @@ from collector.adb.connection import (
 from collector.adb.input import (
     back,
     home,
+    input_text_safe,
+    swipe,
     swipe_to_next_screen,
     tap,
     type_text,
@@ -18,6 +21,7 @@ from collector.adb.input import (
 from collector.adb.screenshot import Screenshot, ScreenshotError, capture
 
 __all__ = [
+    "AdbCommandError",
     "Screenshot",
     "ScreenshotError",
     "capture",
@@ -28,8 +32,10 @@ __all__ = [
     "launch_app",
     "list_devices",
     "tap",
+    "swipe",
     "swipe_to_next_screen",
     "back",
     "home",
     "type_text",
+    "input_text_safe",
 ]

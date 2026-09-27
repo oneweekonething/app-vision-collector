@@ -140,7 +140,7 @@ def main() -> int:
         stats = store.save_extraction(record["screen"], record, extraction)
         print(f"[屏 {index}] 新增 {stats['new']} / 重复 {stats['duplicates']}")
 
-    index_path = store.finalize("no_new_items")
+    store.finalize("no_new_items")
 
     # 把日期桶目录归位到固定的 examples/demo-session，方便引用与校验
     final_dir = EXAMPLE_ROOT / "demo-session"

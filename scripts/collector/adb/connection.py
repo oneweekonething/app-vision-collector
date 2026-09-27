@@ -8,6 +8,32 @@ import shutil
 import subprocess
 from pathlib import Path
 
+class AdbCommandError(RuntimeError):
+    """adb 命令执行失败（非零退出码或超时）。
+
+    上层（StepAgent / collect.py）依据本异常把设备故障反馈给模型或终止会话，
+    而不是把失败当成"动作已完成"继续烧 token。
+    """
+
+    def __init__(
+        self,
+        args: list[str],
+        returncode: int,
+        stderr: str = "",
+        device_id: str | None = None,
+        timeout: int | None = None,
+    ):
+        self.args_cmd = list(args)
+        self.returncode = returncode
+        self.device_id = device_id
+        target = f"设备 {device_id}" if device_id else "adb"
+        detail = f"超时（>{timeout}s）" if timeout is not None else f"rc={returncode}"
+        message = f"{target} 命令失败 ({detail}): adb {' '.join(args)}"
+        if stderr.strip():
+            message += f" | {stderr.strip()[:200]}"
+        super().__init__(message)
+
+
 # 常见 App 的包名映射：launch 时按名称或包名启动
 KNOWN_APPS = {
     "wechat": "com.tencent.mm",
@@ -57,14 +83,30 @@ def run_adb(
     device_id: str | None = None,
     timeout: int = 15,
     binary: bool = False,
+    check: bool = False,
 ) -> subprocess.CompletedProcess:
-    """执行一条 adb 命令并返回 CompletedProcess。"""
-    return subprocess.run(
-        _adb_prefix(device_id) + args,
-        capture_output=True,
-        timeout=timeout,
-        **({"errors": "replace"} if not binary else {}),
-    )
+    """执行一条 adb 命令并返回 CompletedProcess。
+
+    check=True 时非零退出码/超时抛 AdbCommandError；默认 False 保持只读
+    观察类调用（截屏、dumpsys 等）原有的自行判错空间。
+    """
+    try:
+        result = subprocess.run(
+            _adb_prefix(device_id) + args,
+            capture_output=True,
+            timeout=timeout,
+            **({"errors": "replace"} if not binary else {}),
+        )
+    except subprocess.TimeoutExpired as exc:
+        if check:
+            raise AdbCommandError(args, -1, device_id=device_id, timeout=timeout) from exc
+        raise
+    if check and result.returncode != 0:
+        stderr = result.stderr or b"" if binary else (result.stderr or "")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        raise AdbCommandError(args, result.returncode, stderr, device_id=device_id)
+    return result
 
 
 def list_devices() -> list[dict[str, str]]:
@@ -96,15 +138,19 @@ def ensure_device(device_id: str | None = None) -> str:
     return devices[0]["device_id"]
 
 
-def shell(args: list[str], device_id: str | None = None, timeout: int = 15) -> str:
-    """执行 adb shell 命令，返回 stdout 文本。"""
-    result = run_adb(["shell", *args], device_id=device_id, timeout=timeout)
+def shell(args: list[str], device_id: str | None = None, timeout: int = 15,
+          check: bool = True) -> str:
+    """执行 adb shell 命令，返回 stdout 文本。
+
+    check=False 供容错读取（读不到时自行降级的调用方）使用。
+    """
+    result = run_adb(["shell", *args], device_id=device_id, timeout=timeout, check=check)
     return (result.stdout or "").strip()
 
 
 def get_screen_size(device_id: str | None = None) -> tuple[int, int]:
-    """获取屏幕物理分辨率 (width, height)。"""
-    output = shell(["wm", "size"], device_id=device_id)
+    """获取屏幕物理分辨率 (width, height)；读取失败时回退默认值。"""
+    output = shell(["wm", "size"], device_id=device_id, check=False)
     matches = re.findall(r"(\d+)x(\d+)", output)
     if matches:
         width, height = (int(v) for v in matches[-1])
@@ -114,7 +160,7 @@ def get_screen_size(device_id: str | None = None) -> tuple[int, int]:
 
 def get_current_app(device_id: str | None = None) -> str:
     """获取当前前台应用，返回 'package/activity' 或 'unknown'。"""
-    output = shell(["dumpsys", "window"], device_id=device_id, timeout=20)
+    output = shell(["dumpsys", "window"], device_id=device_id, timeout=20, check=False)
     match = re.search(r"mCurrentFocus=Window\{[^}]*\bu0\s+([\w.]+/[\w.$]+)", output)
     if match:
         return match.group(1)
@@ -123,11 +169,15 @@ def get_current_app(device_id: str | None = None) -> str:
 
 
 def launch_app(app: str, device_id: str | None = None) -> bool:
-    """按名称（中英文）或包名启动 App。"""
+    """按名称（中英文）或包名启动 App；返回是否成功注入启动事件。"""
     package = KNOWN_APPS.get(app) or KNOWN_APPS.get(app.lower(), app)
     result = run_adb(
         ["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"],
         device_id=device_id,
         timeout=20,
+        check=True,
     )
-    return result.returncode == 0 and b"Events injected: 1" in (result.stdout or b"")
+    stdout = result.stdout or ""
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    return "Events injected: 1" in stdout

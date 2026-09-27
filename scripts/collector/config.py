@@ -31,11 +31,17 @@ class CollectorConfig:
     nav_max_tokens: int = 4096
     # 提取容错：单屏失败留证据后跳过，连续 N 屏失败才终止会话
     max_extract_failures: int = 2
-    # 停止条件：连续 N 屏没有新信息则认为已到边界
+    # 停止条件：连续 N 屏没有新信息，且画面无位移（或用尽宽限屏数）才停止
     no_new_stop_streak: int = 2
+    no_new_grace_screens: int = 2     # 连续无新内容时的额外宽限屏数
+    stuck_hash_distance: int = 4      # 64bit 感知哈希汉明距离 ≤ 此值视为画面未移动
+    # 导航：finish 后做一次目标页核验；连续设备/动作失败与护栏拦截的终止阈值
+    nav_verify: bool = True
+    nav_device_failures: int = 3
+    nav_guard_denials: int = 3
 
     @classmethod
-    def from_env(cls) -> "CollectorConfig":
+    def from_env(cls) -> CollectorConfig:
         """从环境变量构建配置。
 
         Key 的查找顺序：AVC_API_KEY > DASHSCOPE_API_KEY > BIGMODEL_API_KEY >
@@ -58,4 +64,5 @@ class CollectorConfig:
             max_screens=int(os.environ.get("AVC_MAX_SCREENS", "20")),
             nav_steps=int(os.environ.get("AVC_NAV_STEPS", "20")),
             scroll_pause=float(os.environ.get("AVC_SCROLL_PAUSE", "1.2")),
+            nav_verify=os.environ.get("AVC_NAV_VERIFY", "1") not in {"0", "false", "no"},
         )

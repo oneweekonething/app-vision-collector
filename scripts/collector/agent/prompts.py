@@ -1,7 +1,8 @@
 """系统提示词：导航 Agent 与提取 Agent。
 
-两个提示词都遵循同一个底线：**只读采集**。导航动作集合里没有任何
-发送/发布/点赞/支付类操作，提取提示词要求"不捏造、看不清就标注"。
+两个提示词都遵循同一个底线：**只读采集**。导航动作集合不含写原语，
+且每个动作在执行前经过 ActionGuard 语义护栏（见 safety.py）；
+提取提示词要求"不捏造、看不清就标注"。
 """
 
 from __future__ import annotations
@@ -63,19 +64,25 @@ def build_nav_system_prompt() -> str:
 <answer>{动作指令}</answer>
 
 可用动作指令（坐标均为 0-999 归一化坐标，左上角 (0,0)，右下角 (999,999)）：
-- do(action="Launch", app="包名或应用名")  启动目标 App
-- do(action="Tap", element=[x,y])          点击屏幕位置
-- do(action="Type", text="xxx")            向已聚焦的输入框输入文本
-- do(action="Swipe", start=[x1,y1], end=[x2,y2])  滑动手势
-- do(action="Back")                        返回上一页/关闭弹窗
-- do(action="Home")                        回到桌面
-- do(action="Wait", duration="2 seconds")  等待页面加载
-- finish(message="...")                    任务完成，message 为结果说明
+- do(action="Launch", app="包名或应用名")                        启动目标 App
+- do(action="Tap", element=[x,y], intent="意图", target_text="元素文字")  点击屏幕位置
+- do(action="Type", text="xxx", intent="意图")                   向已聚焦的输入框输入文本
+- do(action="Swipe", start=[x1,y1], end=[x2,y2], intent="意图")  滑动手势
+- do(action="Back")                                              返回上一页/关闭弹窗
+- do(action="Home")                                              回到桌面
+- do(action="Wait", duration="2 seconds")                        等待页面加载
+- finish(message="...")                                          任务完成，message 为结果说明
+
+intent 用英文短语概括这一步的目的（如 open_chat / search / scroll / close_popup），
+target_text 填被点击元素上可见的文字；这两个字段是安全护栏的判定依据，必须如实填写。
 
 【最高优先级约束——只读浏览】
 你只能执行浏览类操作。绝对禁止执行任何会改变 App 或服务器状态的行为：
 不发送消息、不发布/评论/点赞/收藏/关注、不购买/支付、不删除、不同意任何授权弹窗
 （遇到授权弹窗直接 Back 取消）。
+每个动作执行前会经过只读安全护栏：点击发送/点赞/支付/删除等写操作按钮会被拒绝执行，
+并以 [GUARD] 开头的消息反馈原因——此时请改用搜索、返回或其他浏览入口重新规划，
+绝不尝试绕过护栏。
 
 操作纪律：
 1. 执行动作前先确认当前 App 是否正确，不正确先 Launch。
@@ -85,6 +92,17 @@ def build_nav_system_prompt() -> str:
 5. 同一位置点击最多重试 2 次；仍无效说明坐标或状态有问题，先 Home 复位后重新 Launch 目标 App。
 6. 每次只输出一个动作指令（do 或 finish）。
 7. 系统会在每个动作后自动把新截图发给你；确认目标页面已到达后输出 finish。
+   finish 后系统会核验当前页面是否真的满足目标，未满足会要求你继续导航。
+"""
+
+
+NAV_VERIFY_PROMPT = """请判断当前手机截图是否已经满足下面的导航目标。
+导航目标: {task}
+当前前台应用: {current_app}
+
+要求：
+1. 第一行只输出 YES 或 NO（满足 / 不满足），不要输出其他内容；
+2. 第二行用一句话说明你在屏幕上看到了什么、为什么做出这个判断。
 """
 
 

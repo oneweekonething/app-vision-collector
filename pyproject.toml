@@ -1,0 +1,11 @@
+# 工具链配置（本项目以 scripts/ + sys.path 方式组织，不作为包构建）
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# 单测需要先注入 scripts/ 路径再 import，E402 顺序是刻意的
+"tests/*" = ["E402"]

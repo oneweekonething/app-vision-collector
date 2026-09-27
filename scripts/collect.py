@@ -33,6 +33,7 @@ from collector import adb
 from collector.agent import ExtractAgent, StepAgent
 from collector.agent.prompts import APP_NAV_TEMPLATES
 from collector.config import CollectorConfig
+from collector.imaging import average_hash, hamming_distance
 from collector.store import SessionStore
 
 
@@ -141,7 +142,8 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
     error: str | None = None
 
     try:
-        # 1. 导航：由 StepAgent 把手机带到目标页面
+        # 1. 导航：由 StepAgent 把手机带到目标页面；失败则本会话不再采集，
+        #    避免把错误页面的数据当成合法证据入库
         if not args.no_navigate:
             if not args.no_reset:
                 # 从已知状态开始：分屏/悬浮窗/深层页面会让 0-999 坐标映射错乱，
@@ -150,8 +152,19 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
                 time.sleep(1.2)
             nav_task = build_navigation_task(args.app, args.target, task)
             print(f"[导航] {nav_task.splitlines()[0]}")
-            result = StepAgent(config, device_id=device_id, verbose=args.verbose).run(nav_task)
-            print(f"[导航完成] {result}")
+            nav = StepAgent(config, device_id=device_id, verbose=args.verbose).run(nav_task)
+            print(f"[导航完成] success={nav.success} reason={nav.reason} "
+                  f"steps={nav.steps} app={nav.current_app}")
+            if nav.message:
+                print(f"[导航说明] {nav.message}")
+            store.record_navigation(nav.success, nav.reason, nav.message,
+                                    nav.steps, nav.current_app)
+            if not nav.success:
+                stop_reason = "navigation_failed"
+                error = f"导航未完成（{nav.reason}）: {nav.message}"
+                print(f"[停止] {error}")
+                index_path = store.finalize(stop_reason, error=error)
+                return _summary(store, stop_reason, error, index_path)
 
         # 2. 截屏 → 提取 → 翻页 循环
         extractor = ExtractAgent(config, app=args.app, task=task)
@@ -162,6 +175,8 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
 
         no_new_streak = 0
         consecutive_failures = 0
+        stuck_streak = 0          # 相邻屏感知哈希几乎不变 → 翻页已无效
+        prev_hash: int | None = None
         max_screens = 1 if args.no_scroll else config.max_screens
 
         while store.screen_count < max_screens:
@@ -169,6 +184,14 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
             record = store.save_screenshot(screenshot)
             print(f"[截屏 {store.screen_count}/{max_screens}] {record['path']} "
                   f"({record['width']}x{record['height']})")
+
+            current_hash = average_hash(screenshot.png_bytes)
+            if current_hash is not None and prev_hash is not None \
+                    and hamming_distance(current_hash, prev_hash) <= config.stuck_hash_distance:
+                stuck_streak += 1
+            else:
+                stuck_streak = 0
+            prev_hash = current_hash
 
             try:
                 extraction = extractor.extract(screenshot)
@@ -198,8 +221,14 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
 
             if stats["new"] == 0:
                 no_new_streak += 1
-                if no_new_streak >= config.no_new_stop_streak:
-                    print(f"[停止] 连续 {no_new_streak} 屏无新内容，已到信息边界")
+                # 无新内容 ≠ 到底：长图/大卡片可能连续几屏没有新条目。
+                # 只有"画面也翻不动了"或"宽限屏数用尽"才认定信息边界。
+                if stuck_streak >= 1:
+                    print(f"[停止] 连续 {no_new_streak} 屏无新内容且画面无位移，已到信息边界")
+                    stop_reason = "no_new_items"
+                    break
+                if no_new_streak >= config.no_new_stop_streak + config.no_new_grace_screens:
+                    print(f"[停止] 连续 {no_new_streak} 屏无新内容（宽限已用尽），停止采集")
                     stop_reason = "no_new_items"
                     break
             else:
@@ -220,16 +249,23 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
         print(f"[错误] {exc}")
 
     index_path = store.finalize(stop_reason, error=error)
-    totals = index_path and "见 index.json"
+    return _summary(store, stop_reason, error, index_path)
+
+
+def _summary(store: SessionStore, stop_reason: str, error: str | None,
+             index_path: Path | None) -> int:
+    """打印会话收尾摘要并返回退出码。"""
     print("=" * 56)
     summary = (f"[完成] 原因: {stop_reason} | 屏数: {store.screen_count} | "
                f"提取: {store.extracted_total} | 去重后: {len(store.items)}")
     if store.extract_failures_total:
         summary += f" | 提取失败: {store.extract_failures_total} 屏"
     print(summary)
+    if error:
+        print(f"[错误详情] {error}")
     print(f"[产物] {store.session_dir}")
     print(f"[校验] python3 scripts/inspect_session.py {store.session_dir}")
-    print(f"[索引] {index_path} ({totals})")
+    print(f"[索引] {index_path}")
     return 0 if stop_reason in {"completed", "no_new_items", "max_screens", "interrupted"} else 2
 
 

@@ -11,14 +11,16 @@
 
 溯源不变量：
 1. 先存截屏、后做提取——任何进入 index 的信息必然对应一张已留存截图；
-2. manifest.jsonl 只追加、不修改，是事件流水的事实来源；
-3. index.json 由 finalize() 一次性写出，是给人和程序读的汇总视图。
+2. manifest.jsonl 只追加、不修改，是事件流水的事实来源（每条追加后 fsync）；
+3. index.json 由 finalize() 一次性写出，是给人和程序读的汇总视图；
+4. 所有落盘走 tmp + fsync + 原子 rename，进程中断不会留下半个文件。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,7 @@ from typing import Any
 
 from collector import PROMPT_VERSION, __version__
 from collector.adb.screenshot import Screenshot
+from collector.store.dedup import Deduplicator
 
 
 def _now_iso() -> str:
@@ -36,11 +39,6 @@ def _slugify(text: str, max_len: int = 40) -> str:
     """把目标名/任务名转成文件名安全的短 slug。"""
     text = re.sub(r"[\\/:*?\"<>|\s]+", "-", text.strip())
     return (text[:max_len].strip("-")) or "task"
-
-
-def _normalize_text(text: Any) -> str:
-    """条目文本归一化：用于跨屏去重指纹。"""
-    return " ".join(str(text or "").split()).lower()
 
 
 class SessionStore:
@@ -54,8 +52,9 @@ class SessionStore:
 
         self.screen_count = 0
         self.items: list[dict[str, Any]] = []       # 去重后的条目目录
-        self._fingerprints: set[str] = set()        # 条目指纹 → 去重
+        self.dedup = Deduplicator()                 # 跨屏去重（聊天类滑窗策略）
         self._item_seq = 0
+        self._navigation: dict[str, Any] | None = None
         self.extracted_total = 0
         self.duplicates_total = 0
         self.extract_failures_total = 0
@@ -73,7 +72,7 @@ class SessionStore:
         device_id: str,
         vlm_model: str,
         nav_model: str,
-    ) -> "SessionStore":
+    ) -> SessionStore:
         """创建新会话目录并写入元数据与首条台账事件。"""
         started = datetime.now()
         session_id = started.strftime("%Y%m%d-%H%M%S")
@@ -108,7 +107,7 @@ class SessionStore:
         self.screen_count += 1
         filename = f"screen-{self.screen_count:04d}.png"
         path = self.screenshots_dir / filename
-        path.write_bytes(screenshot.png_bytes)
+        _atomic_write_bytes(path, screenshot.png_bytes)
 
         record = {
             "event": "screenshot",
@@ -156,10 +155,8 @@ class SessionStore:
 
         new_ids: list[str] = []
         for item in items:
-            fingerprint = _fingerprint(item)
-            if fingerprint in self._fingerprints:
+            if not self.dedup.admit(screen, item):
                 continue
-            self._fingerprints.add(fingerprint)
 
             self._item_seq += 1
             item_id = f"itm_{self._item_seq:06d}"
@@ -235,6 +232,20 @@ class SessionStore:
             "error": message,
         })
 
+    # -------------------------------------------------------------- navigation
+
+    def record_navigation(self, success: bool, reason: str, message: str = "",
+                          steps: int = 0, current_app: str = "") -> None:
+        """登记导航结果：入台账，finalize 时并入 index.json 顶层 navigation 字段。"""
+        self._navigation = {
+            "success": success,
+            "reason": reason,
+            "message": message,
+            "steps": steps,
+            "current_app": current_app,
+        }
+        self._manifest({"event": "navigation", **self._navigation})
+
     # ----------------------------------------------------------------- finish
 
     def finalize(self, stop_reason: str, error: str | None = None) -> Path:
@@ -257,6 +268,8 @@ class SessionStore:
             },
             "items": self.items,
         }
+        if self._navigation is not None:
+            index["navigation"] = self._navigation
         path = self.session_dir / "index.json"
         _write_json(path, index)
         self._manifest({
@@ -271,8 +284,11 @@ class SessionStore:
 
     def _manifest(self, event: dict[str, Any]) -> None:
         event = {"ts": _now_iso(), **event}
+        # 追加 + fsync：进程被杀后已确认的事件不会只停留在缓冲区
         with self.manifest_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 # -------------------------------------------------------------------- helpers
@@ -285,18 +301,29 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fingerprint(item: dict[str, Any]) -> str:
-    """条目去重指纹：类型 + 发送者 + 标题 + 正文（归一化后）。"""
-    key = "|".join([
-        str(item.get("type", "")),
-        _normalize_text(item.get("sender")),
-        _normalize_text(item.get("title")),
-        _normalize_text(item.get("text")),
-    ])
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+def _fsync_dir(path: Path) -> None:
+    """fsync 目录句柄，让 rename 后的目录项真正落盘（尽力而为）。"""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """tmp 文件 + fsync + 原子 rename，避免中断留下半个文件。"""
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    _atomic_write_bytes(
+        path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))

@@ -2,29 +2,37 @@
 
 文本输入依赖设备上安装的 ADB Keyboard（com.android.adbkeyboard），
 通过广播 base64 编码内容实现对中文等非 ASCII 文本的输入——用于搜索框等场景。
+
+输入法生命周期由 input_text_safe() 以事务方式管理：输入前切换到
+ADB Keyboard，无论输入成败都在 finally 中恢复原输入法。
 """
 
 from __future__ import annotations
 
 import base64
 import random
-import time
 
-from collector.adb.connection import _adb_prefix, get_screen_size, run_adb, shell
+from collector.adb.connection import (
+    AdbCommandError,
+    get_screen_size,
+    run_adb,
+    shell,
+)
 
-ADB_IME = "com.android.adbkeyboard/.AdbIME"
+ADB_IME_PACKAGE = "com.android.adbkeyboard"
+ADB_IME = f"{ADB_IME_PACKAGE}/.AdbIME"
 
 
 def tap(x: int, y: int, device_id: str | None = None) -> None:
-    run_adb(["shell", "input", "tap", str(x), str(y)], device_id=device_id, timeout=10)
+    run_adb(["shell", "input", "tap", str(x), str(y)], device_id=device_id, timeout=10, check=True)
 
 
 def back(device_id: str | None = None) -> None:
-    run_adb(["shell", "input", "keyevent", "4"], device_id=device_id, timeout=10)
+    run_adb(["shell", "input", "keyevent", "4"], device_id=device_id, timeout=10, check=True)
 
 
 def home(device_id: str | None = None) -> None:
-    run_adb(["shell", "input", "keyevent", "3"], device_id=device_id, timeout=10)
+    run_adb(["shell", "input", "keyevent", "3"], device_id=device_id, timeout=10, check=True)
 
 
 def swipe(
@@ -39,6 +47,7 @@ def swipe(
         ["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
         device_id=device_id,
         timeout=15,
+        check=True,
     )
 
 
@@ -60,7 +69,7 @@ def swipe_to_next_screen(device_id: str | None = None) -> None:
 
 
 def type_text(text: str, device_id: str | None = None) -> None:
-    """向当前聚焦的输入框输入文本（需设备已安装 ADB Keyboard）。"""
+    """向当前聚焦的输入框输入文本（需设备已切换到 ADB Keyboard）。"""
     encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
     run_adb(
         [
@@ -70,25 +79,46 @@ def type_text(text: str, device_id: str | None = None) -> None:
         ],
         device_id=device_id,
         timeout=10,
+        check=True,
     )
 
 
 def ensure_adb_keyboard(device_id: str | None = None) -> str | None:
     """切换到 ADB Keyboard，返回原输入法 id 以便恢复。
 
-    设备未安装 ADB Keyboard 时不做任何切换，返回 None。
+    设备已启用但未激活 ADB Keyboard 时执行 `ime set`；未启用时抛
+    AdbCommandError（提示安装），调用方据此给出可诊断的失败原因。
     """
+    enabled = shell(["ime", "list", "-s"], device_id=device_id, check=False)
+    if ADB_IME_PACKAGE not in enabled:
+        raise AdbCommandError(
+            ["ime", "set", ADB_IME], 1,
+            f"设备未启用 ADB Keyboard（{ADB_IME_PACKAGE}），无法输入文本；"
+            "请按 README 安装并启用后重试",
+            device_id=device_id,
+        )
     current = shell(
-        ["settings", "get", "secure", "default_input_method"], device_id=device_id
+        ["settings", "get", "secure", "default_input_method"], device_id=device_id, check=False
     )
-    if not current:
-        return None
-    if "com.android.adbkeyboard" in current:
-        return current
-    run_adb(["shell", "ime", "set", ADB_IME], device_id=device_id, timeout=10)
-    return current
+    if ADB_IME_PACKAGE in current:
+        return current  # 已是 ADB Keyboard，恢复为自身即无操作
+    run_adb(["shell", "ime", "set", ADB_IME], device_id=device_id, timeout=10, check=True)
+    return current or None
 
 
-def restore_keyboard(ime: str, device_id: str | None = None) -> None:
+def restore_keyboard(ime: str | None, device_id: str | None = None) -> None:
     if ime:
-        run_adb(["shell", "ime", "set", ime], device_id=device_id, timeout=10)
+        run_adb(["shell", "ime", "set", ime], device_id=device_id, timeout=10, check=True)
+
+
+def input_text_safe(text: str, device_id: str | None = None) -> None:
+    """事务式文本输入：切换输入法 → 输入 → 无论成败恢复原输入法。
+
+    StepAgent 的 Type 动作必须走这个入口，保证采集结束后用户的
+    默认输入法不被留在 ADB Keyboard 上。
+    """
+    previous_ime = ensure_adb_keyboard(device_id)
+    try:
+        type_text(text, device_id)
+    finally:
+        restore_keyboard(previous_ime, device_id)

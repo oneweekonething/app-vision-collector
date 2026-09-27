@@ -122,6 +122,53 @@ class SessionStoreTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.store.finalize("completed")
 
+    def test_real_message_repeat_beyond_window_kept(self):
+        # 张三两次发"收到"且截图无时间戳：相邻屏（重叠重采）去重，
+        # 窗口外的真实重复保留——旧版全局指纹会把第二条误杀
+        repeat = {"type": "message", "sender": "张三", "text": "收到",
+                  "time_hint": None, "title": None, "extra": {}}
+        for screen in (1, 2, 3):
+            record = self.store.save_screenshot(make_screenshot())
+            stats = self.store.save_extraction(screen, record, {"items": [dict(repeat)]})
+            self.assertEqual(stats["new"], 0 if screen > 1 else 1)
+        record = self.store.save_screenshot(make_screenshot())
+        stats = self.store.save_extraction(4, record, {"items": [dict(repeat)]})
+        self.assertEqual(stats["new"], 0)   # 仍在滑窗内（60% 重叠最多跨 3 屏）
+        record = self.store.save_screenshot(make_screenshot())
+        stats = self.store.save_extraction(5, record, {"items": [dict(repeat)]})
+        self.assertEqual(stats["new"], 1)   # 出窗 → 真实重复，保留
+
+    def test_same_text_different_time_not_merged(self):
+        first = {"type": "message", "sender": "张三", "text": "收到",
+                 "time_hint": "2026年09月27日 19:00", "title": None, "extra": {}}
+        second = dict(first, time_hint="2026年09月27日 20:30")
+        r1 = self.store.save_screenshot(make_screenshot())
+        stats1 = self.store.save_extraction(1, r1, {"items": [first]})
+        r2 = self.store.save_screenshot(make_screenshot())
+        stats2 = self.store.save_extraction(2, r2, {"items": [second]})
+        self.assertEqual((stats1["new"], stats2["new"]), (1, 1))
+
+    def test_record_navigation_into_manifest_and_index(self):
+        self.store.record_navigation(True, "finished", "已进入群聊", steps=4,
+                                     current_app="com.tencent.mm/.ui.LauncherUI")
+        index = json.loads(self.store.finalize("completed").read_text(encoding="utf-8"))
+        self.assertEqual(index["navigation"]["success"], True)
+        self.assertEqual(index["navigation"]["steps"], 4)
+
+        events = [json.loads(line) for line in
+                  (self.store.session_dir / "manifest.jsonl").read_text(encoding="utf-8").splitlines()]
+        nav_events = [e for e in events if e["event"] == "navigation"]
+        self.assertEqual(len(nav_events), 1)
+        self.assertEqual(nav_events[0]["reason"], "finished")
+
+    def test_no_tmp_files_left_behind(self):
+        # 原子写：正常路径不留 .tmp；中断场景由 tmp+rename 语义保证
+        record = self.store.save_screenshot(make_screenshot())
+        self.store.save_extraction(1, record, {"items": [ITEM_A]})
+        self.store.finalize("completed")
+        leftovers = [p for p in self.store.session_dir.rglob("*") if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
     def test_extraction_failure_keeps_session_verifiable(self):
         # 失败屏：截图照存，提取留失败记录（含最后一次模型输出），会话仍可整体通过校验
         record = self.store.save_screenshot(make_screenshot())
