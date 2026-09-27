@@ -1,0 +1,123 @@
+{
+  "session_id": "20260927-080740_wechat_demo-session",
+  "collector_version": "0.1.0",
+  "prompt_version": "extract-v1",
+  "app": "wechat",
+  "target": "demo-session",
+  "task": "离线示例：展示目录结构与溯源字段（非真实采集）",
+  "device_id": "demo-device",
+  "vlm_model": "demo-vlm",
+  "nav_model": "demo-nav",
+  "started_at": "2026-09-27T08:07:40+08:00",
+  "finished_at": "2026-09-27T08:07:40+08:00",
+  "stop_reason": "no_new_items",
+  "error": null,
+  "totals": {
+    "screens": 2,
+    "items_extracted": 5,
+    "items_unique": 4,
+    "duplicates": 1
+  },
+  "items": [
+    {
+      "item_id": "itm_000001",
+      "app": "wechat",
+      "type": "message",
+      "title": null,
+      "sender": "王小明",
+      "text": "hi, demo msg 1",
+      "time_hint": "2026年09月27日 20:40",
+      "extra": {},
+      "confidence": "high",
+      "evidence": {
+        "screenshot": "screenshots/screen-0001.png",
+        "sha256": "f0df32b10ac8b4e4899ffbe549bb2bb0f9f3305f968fde93fccd3f1f6cbf0420",
+        "captured_at": "2026-09-27T08:07:40+08:00",
+        "screen_index": 1,
+        "bbox": [
+          20,
+          110,
+          300,
+          160
+        ],
+        "model": "demo-vlm",
+        "prompt_version": "extract-v1"
+      }
+    },
+    {
+      "item_id": "itm_000002",
+      "app": "wechat",
+      "type": "message",
+      "title": null,
+      "sender": "我",
+      "text": "hello back",
+      "time_hint": "2026年09月27日 20:41",
+      "extra": {},
+      "confidence": "high",
+      "evidence": {
+        "screenshot": "screenshots/screen-0001.png",
+        "sha256": "f0df32b10ac8b4e4899ffbe549bb2bb0f9f3305f968fde93fccd3f1f6cbf0420",
+        "captured_at": "2026-09-27T08:07:40+08:00",
+        "screen_index": 1,
+        "bbox": [
+          240,
+          220,
+          520,
+          270
+        ],
+        "model": "demo-vlm",
+        "prompt_version": "extract-v1"
+      }
+    },
+    {
+      "item_id": "itm_000003",
+      "app": "wechat",
+      "type": "message",
+      "title": null,
+      "sender": "李雷",
+      "text": "see you at 8pm",
+      "time_hint": "2026年09月27日 20:42",
+      "extra": {},
+      "confidence": "high",
+      "evidence": {
+        "screenshot": "screenshots/screen-0001.png",
+        "sha256": "f0df32b10ac8b4e4899ffbe549bb2bb0f9f3305f968fde93fccd3f1f6cbf0420",
+        "captured_at": "2026-09-27T08:07:40+08:00",
+        "screen_index": 1,
+        "bbox": [
+          20,
+          330,
+          320,
+          380
+        ],
+        "model": "demo-vlm",
+        "prompt_version": "extract-v1"
+      }
+    },
+    {
+      "item_id": "itm_000004",
+      "app": "wechat",
+      "type": "message",
+      "title": null,
+      "sender": "韩梅梅",
+      "text": "bring the demo chart",
+      "time_hint": "2026年09月27日 20:15",
+      "extra": {},
+      "confidence": "medium",
+      "evidence": {
+        "screenshot": "screenshots/screen-0002.png",
+        "sha256": "f559ccac2d48103a5c51bab29c63e85eb9af22113487430fe8f418d513a21ba1",
+        "captured_at": "2026-09-27T08:07:40+08:00",
+        "screen_index": 2,
+        "bbox": [
+          20,
+          220,
+          360,
+          270
+        ],
+        "model": "demo-vlm",
+        "prompt_version": "extract-v1"
+      }
+    }
+  ]
+}

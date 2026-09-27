@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 采集产物：截屏与个人信息属于隐私，绝不入库
+collections/
+examples/*/screenshots/*.png
+
+# 环境与密钥
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

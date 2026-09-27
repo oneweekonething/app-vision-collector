@@ -1,0 +1,55 @@
+{
+  "screen": 1,
+  "model": "demo-vlm",
+  "prompt_version": "extract-v1",
+  "extracted_at": "2026-09-27T08:07:40+08:00",
+  "screen_summary": "群聊消息 3 条（demo 数据）",
+  "items": [
+    {
+      "type": "message",
+      "sender": "王小明",
+      "text": "hi, demo msg 1",
+      "time_hint": "2026年09月27日 20:40",
+      "bbox": [
+        20,
+        110,
+        300,
+        160
+      ],
+      "confidence": "high",
+      "title": null,
+      "extra": {}
+    },
+    {
+      "type": "message",
+      "sender": "我",
+      "text": "hello back",
+      "time_hint": "2026年09月27日 20:41",
+      "bbox": [
+        240,
+        220,
+        520,
+        270
+      ],
+      "confidence": "high",
+      "title": null,
+      "extra": {}
+    },
+    {
+      "type": "message",
+      "sender": "李雷",
+      "text": "see you at 8pm",
+      "time_hint": "2026年09月27日 20:42",
+      "bbox": [
+        20,
+        330,
+        320,
+        380
+      ],
+      "confidence": "high",
+      "title": null,
+      "extra": {}
+    }
+  ],
+  "raw_response": ""
+}

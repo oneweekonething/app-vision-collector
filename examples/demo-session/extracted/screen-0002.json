@@ -1,0 +1,40 @@
+{
+  "screen": 2,
+  "model": "demo-vlm",
+  "prompt_version": "extract-v1",
+  "extracted_at": "2026-09-27T08:07:40+08:00",
+  "screen_summary": "上滑后的历史消息 2 条（其中 1 条与上一屏重复，演示去重）",
+  "items": [
+    {
+      "type": "message",
+      "sender": "李雷",
+      "text": "see you at 8pm",
+      "time_hint": "2026年09月27日 20:42",
+      "bbox": [
+        20,
+        110,
+        320,
+        160
+      ],
+      "confidence": "high",
+      "title": null,
+      "extra": {}
+    },
+    {
+      "type": "message",
+      "sender": "韩梅梅",
+      "text": "bring the demo chart",
+      "time_hint": "2026年09月27日 20:15",
+      "bbox": [
+        20,
+        220,
+        360,
+        270
+      ],
+      "confidence": "medium",
+      "title": null,
+      "extra": {}
+    }
+  ],
+  "raw_response": ""
+}

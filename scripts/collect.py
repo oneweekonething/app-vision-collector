@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""app-vision-collector 采集 CLI。
+
+用视觉大模型 + ADB 控制手机完成 App 内信息采集，全程截屏留存、逐条溯源。
+
+示例:
+    # 微信群聊采集
+    python3 scripts/collect.py --app wechat --target "AI 交流群" \
+        --task "进入该群聊并采集聊天消息" --max-screens 20
+
+    # 小红书搜索结果
+    python3 scripts/collect.py --app xiaohongshu --target "手机摄影" \
+        --task "浏览搜索结果并采集笔记标题与作者" --max-screens 10
+
+    # 手机手动停到目标页面，只做截图+提取
+    python3 scripts/collect.py --app generic --no-navigate \
+        --task "采集当前屏幕信息" --max-screens 5
+
+    # 环境自检
+    python3 scripts/collect.py --check
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from collector import adb
+from collector.agent import ExtractAgent, StepAgent
+from collector.agent.prompts import APP_NAV_TEMPLATES
+from collector.config import CollectorConfig
+from collector.store import SessionStore
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="collect",
+        description="可溯源的 App 信息采集器（ADB + 视觉大模型）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("示例:")[1] if __doc__ else None,
+    )
+    parser.add_argument("--app", default="generic",
+                        help="目标 App：wechat / xiaohongshu / 自定义名称（默认 generic）")
+    parser.add_argument("--target", default="",
+                        help="采集目标：群名、搜索关键词等（导航时使用）")
+    parser.add_argument("--task", default="",
+                        help="自然语言采集任务描述（不填则由 app+target 生成）")
+    parser.add_argument("--max-screens", type=int, default=None,
+                        help="最多采集多少屏（默认取配置/环境变量 20）")
+    parser.add_argument("--nav-steps", type=int, default=None,
+                        help="导航 Agent 最大步数（默认 20）")
+    parser.add_argument("--device-id", default=None, help="adb 设备 ID（默认取第一台在线设备）")
+    parser.add_argument("--data-dir", default=None, help="采集数据根目录（默认 ./collections）")
+    parser.add_argument("--no-navigate", action="store_true",
+                        help="跳过导航：假设手机已停在目标页面，直接开始采集")
+    parser.add_argument("--no-scroll", action="store_true",
+                        help="只采集当前一屏，不翻页")
+    parser.add_argument("--check", action="store_true", help="只做环境自检，不采集")
+    parser.add_argument("--verbose", action="store_true", help="输出详细日志")
+    return parser
+
+
+def run_check(config: CollectorConfig) -> int:
+    """环境自检：ADB、设备、模型配置、依赖。"""
+    print("== app-vision-collector 自检 ==")
+
+    try:
+        devices = adb.list_devices()
+        print(f"[ADB] 可执行文件: {adb.get_adb_executable()}")
+        print(f"[ADB] 在线设备: {[d['device_id'] for d in devices] or '无'}")
+        adb_ok = bool(devices)
+    except Exception as exc:
+        print(f"[ADB] 检查失败: {exc}")
+        adb_ok = False
+
+    key_ok = bool(config.api_key)
+    print(f"[模型] API Key: {'已配置' if key_ok else '未配置（设置 AVC_API_KEY / DASHSCOPE_API_KEY）'}")
+    print(f"[模型] API Base: {config.api_base}")
+    print(f"[模型] 提取模型: {config.vlm_model} / 导航模型: {config.nav_model}")
+
+    try:
+        import PIL  # noqa: F401
+        import openai  # noqa: F401
+
+        print("[依赖] Pillow / openai 已安装")
+        deps_ok = True
+    except ImportError as exc:
+        print(f"[依赖] 缺少依赖: {exc}，请执行 pip install -r requirements.txt")
+        deps_ok = False
+
+    if adb_ok and key_ok and deps_ok:
+        print("== 自检通过 ==")
+        return 0
+    print("== 自检未通过，请先修复以上标红项 ==")
+    return 1
+
+
+def build_navigation_task(app: str, target: str, task: str) -> str:
+    """按 App 组装导航任务描述（攻略见 references/*.md）。"""
+    if target:
+        template = APP_NAV_TEMPLATES.get(app, APP_NAV_TEMPLATES["generic"])
+        return template.format(target=target)
+    return task or f"打开 {app} 并停留在需要采集信息的页面"
+
+
+def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
+    """主采集流程：导航 → （截屏 → 提取 → 去重）循环 → 收尾。"""
+    device_id = adb.ensure_device(args.device_id)
+    print(f"[设备] {device_id}")
+
+    if args.max_screens is not None:
+        config.max_screens = args.max_screens
+    if args.nav_steps is not None:
+        config.nav_steps = args.nav_steps
+    if args.data_dir:
+        config.data_dir = Path(args.data_dir)
+
+    task = args.task or (
+        f"采集 {args.app} 中「{args.target}」页面上的信息" if args.target
+        else f"采集 {args.app} 当前页面上的信息"
+    )
+
+    store = SessionStore.create(
+        data_dir=config.data_dir,
+        app=args.app,
+        target=args.target,
+        task=task,
+        device_id=device_id,
+        vlm_model=config.vlm_model,
+        nav_model=config.nav_model,
+    )
+    print(f"[会话] {store.session_dir}")
+
+    stop_reason = "completed"
+    error: str | None = None
+
+    try:
+        # 1. 导航：由 StepAgent 把手机带到目标页面
+        if not args.no_navigate:
+            nav_task = build_navigation_task(args.app, args.target, task)
+            print(f"[导航] {nav_task.splitlines()[0]}")
+            result = StepAgent(config, device_id=device_id, verbose=args.verbose).run(nav_task)
+            print(f"[导航完成] {result}")
+
+        # 2. 截屏 → 提取 → 翻页 循环
+        extractor = ExtractAgent(config, app=args.app, task=task)
+        no_new_streak = 0
+        max_screens = 1 if args.no_scroll else config.max_screens
+
+        while store.screen_count < max_screens:
+            screenshot = adb.capture(device_id)
+            record = store.save_screenshot(screenshot)
+            print(f"[截屏 {store.screen_count}/{max_screens}] {record['path']} "
+                  f"({record['width']}x{record['height']})")
+
+            try:
+                extraction = extractor.extract(screenshot)
+            except Exception as exc:
+                # 提取失败也要留下证据与台账，然后终止本轮
+                error = f"screen {store.screen_count}: {exc}"
+                print(f"[提取失败] {error}")
+                store._manifest({"event": "extraction_failed",
+                                 "screen": store.screen_count,
+                                 "error": error})
+                stop_reason = "extraction_failed"
+                break
+
+            stats = store.save_extraction(store.screen_count, record, extraction)
+            print(f"[提取] 新增 {stats['new']} 条"
+                  f"（提取 {stats['extracted']}，重复 {stats['duplicates']}）")
+
+            if stats["new"] == 0:
+                no_new_streak += 1
+                if no_new_streak >= config.no_new_stop_streak:
+                    print(f"[停止] 连续 {no_new_streak} 屏无新内容，已到信息边界")
+                    stop_reason = "no_new_items"
+                    break
+            else:
+                no_new_streak = 0
+
+            if store.screen_count >= max_screens:
+                stop_reason = "max_screens"
+                break
+
+            adb.swipe_to_next_screen(device_id)
+            time.sleep(config.scroll_pause)
+
+    except KeyboardInterrupt:
+        stop_reason = "interrupted"
+        print("\n[中断] 用户停止采集")
+    except Exception as exc:
+        stop_reason = "error"
+        error = str(exc)
+        print(f"[错误] {exc}")
+
+    index_path = store.finalize(stop_reason, error=error)
+    totals = index_path and "见 index.json"
+    print("=" * 56)
+    print(f"[完成] 原因: {stop_reason} | 屏数: {store.screen_count} | "
+          f"提取: {store.extracted_total} | 去重后: {len(store.items)}")
+    print(f"[产物] {store.session_dir}")
+    print(f"[校验] python3 scripts/inspect_session.py {store.session_dir}")
+    print(f"[索引] {index_path} ({totals})")
+    return 0 if stop_reason in {"completed", "no_new_items", "max_screens", "interrupted"} else 2
+
+
+def main() -> int:
+    args = build_arg_parser().parse_args()
+    config = CollectorConfig.from_env()
+
+    if args.check:
+        return run_check(config)
+    return run_collection(args, config)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
