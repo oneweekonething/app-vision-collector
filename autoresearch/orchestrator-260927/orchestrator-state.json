@@ -1,0 +1,32 @@
+{
+  "goal": "连接真机对 app-vision-collector 进行 6 次真机采集测试",
+  "archetype": "build-feature/explore (orchestration loop)",
+  "success_predicate": "6 个 session 目录全部通过 inspect_session.py 溯源校验，且 >=4 次提取到非空条目",
+  "predicate_met": true,
+  "final_verdict": "CONVERGED",
+  "units_remaining": 0,
+  "hops": [
+    {"hop": "probe-api", "outcome": "progressed", "note": "z.ai OpenAI协议可用，glm-5.3-flash 图像输入验证通过"},
+    {"hop": "T1-generic", "outcome": "progressed", "note": "24条，PASS"},
+    {"hop": "T2-generic", "outcome": "progressed", "note": "26条，PASS"},
+    {"hop": "T3-wechat-list", "outcome": "progressed", "note": "9条，发现目标群「AI通识交流」"},
+    {"hop": "T4-wechat-nav", "outcome": "failed->fixed->progressed", "note": "第1次 KeyError thinking 修复；第2次提取空(推理烧尽6000预算)定位根因后修复；第3次 PASS"},
+    {"hop": "T5-wechat-nav-from-list", "outcome": "blocked->rerouted->progressed", "note": "glm-5.3-flash 20步导航触发分屏坐标错乱+配额耗尽(1113)；autoglm-phone+glm-4.5v 复跑 PASS"},
+    {"hop": "T6-wechat-nav", "outcome": "progressed", "note": "13条，PASS"},
+    {"hop": "final-verify", "outcome": "progressed", "note": "6/6 inspect PASS，6/6 非空，谓词满足"}
+  ],
+  "incidents": [
+    "step_agent._execute_step 引用不存在的 action['thinking'] -> 抽取 _assistant_record 纯函数+单测",
+    "glm-5.3-flash 强制思考: 密集截图推理5367-8383 token 耗尽 max_tokens=6000 致 content 空 -> extract_max_tokens=16000 + effort=low(仅glm-5*) + json.loads(strict=False)",
+    "qwen3-vl-plus(dashscope) 对含 DSL 的导航 system prompt 静默返回空 content(completion_tokens=1)，未解决，改用 bigmodel autoglm-phone",
+    "autoglm-phone max_tokens 上限4096 -> 独立 nav_max_tokens 配置",
+    "分屏/多窗口导致0-999坐标映射错乱、导航循环空点20步烧配额 -> 导航前 Home 复位(默认开) + 提示词分屏纪律",
+    "z.ai key 与 bigmodel key 同属智谱账户体系，资源包耗尽(1113)；改用 auto_data_local/.env 的 ZHIPUAI_API_KEY 完成 T5/T6"
+  ],
+  "artifacts": {
+    "sessions": "collections/2026-09-27/",
+    "logs": "autoresearch/orchestrator-260927/logs/",
+    "results": "autoresearch/orchestrator-260927/results.tsv",
+    "report": "autoresearch/orchestrator-260927/REPORT.md"
+  }
+}

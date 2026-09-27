@@ -35,6 +35,26 @@ class ExtractAgent:
         self.task = task
         self.prompt = build_extract_prompt(app, task)
         self.client = OpenAI(base_url=config.api_base, api_key=config.api_key)
+        # GLM-5.x 等强制思考的模型：无法关闭 thinking，只能调低档位，
+        # 且推理 token 计入 max_tokens（实测密集群聊截图会推理 5000-9000 token）。
+        # 按模型名判定（glm-4.5v 等不认 effort 参数，不能按域名误伤）
+        self.extra_body = (
+            {"thinking": {"type": "enabled", "effort": "low"}}
+            if "glm-5" in config.vlm_model.lower()
+            else None
+        )
+
+    def _create(self, messages: list[dict], temperature: float) -> Any:
+        kwargs: dict[str, Any] = {}
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
+        return self.client.chat.completions.create(
+            model=self.config.vlm_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=self.config.extract_max_tokens,
+            **kwargs
+        )
 
     def extract(self, screenshot: adb.Screenshot) -> dict[str, Any]:
         """对一屏截图做结构化提取，返回 {"screen_summary", "items", ...}。
@@ -47,9 +67,8 @@ class ExtractAgent:
         last_error: Exception | None = None
         last_raw = ""
         for attempt in range(1, self.config.extract_retries + 1):
-            response = self.client.chat.completions.create(
-                model=self.config.vlm_model,
-                messages=[{
+            response = self._create(
+                [{
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64(screenshot)}"}},
@@ -57,7 +76,6 @@ class ExtractAgent:
                     ],
                 }],
                 temperature=0.1,
-                max_tokens=self.config.extract_max_tokens,  # 推理模型 thinking 也计入预算
             )
             raw = response.choices[0].message.content or ""
             last_raw = raw
@@ -89,11 +107,9 @@ class ExtractAgent:
             (修复调用的原始输出, 解析结果)；修复无效时为 (None, None)。
         """
         try:
-            response = self.client.chat.completions.create(
-                model=self.config.vlm_model,
-                messages=[{"role": "user", "content": REPAIR_PROMPT.format(error=error, raw=raw)}],
+            response = self._create(
+                [{"role": "user", "content": REPAIR_PROMPT.format(error=error, raw=raw)}],
                 temperature=0.0,
-                max_tokens=self.config.extract_max_tokens,
             )
             repaired_raw = response.choices[0].message.content or ""
             return repaired_raw, _parse_json(repaired_raw)
@@ -102,7 +118,7 @@ class ExtractAgent:
 
 
 def _parse_json(text: str) -> dict[str, Any]:
-    """解析模型输出；容忍 ```json 代码围栏与前后杂质。"""
+    """解析模型输出；容忍 ```json 代码围栏、前后杂质与字符串内换行符。"""
     text = text.strip()
 
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
@@ -114,7 +130,8 @@ def _parse_json(text: str) -> dict[str, Any]:
     if start == -1 or end == -1 or end <= start:
         raise ValueError("输出中找不到 JSON 对象")
 
-    data = json.loads(text[start : end + 1])
+    # strict=False：容忍模型在字符串值里输出原始换行/制表符（常见缺陷）
+    data = json.loads(text[start : end + 1], strict=False)
     if not isinstance(data, dict) or "items" not in data:
         raise ValueError("JSON 缺少 items 字段")
     return data

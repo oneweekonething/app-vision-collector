@@ -1,5 +1,5 @@
 {
-  "session_id": "20260927-080740_wechat_demo-session",
+  "session_id": "20260927-165812_wechat_demo-session",
   "collector_version": "0.1.0",
   "prompt_version": "extract-v1",
   "app": "wechat",
@@ -8,5 +8,5 @@
   "device_id": "demo-device",
   "vlm_model": "demo-vlm",
   "nav_model": "demo-nav",
-  "started_at": "2026-09-27T08:07:40+08:00"
+  "started_at": "2026-09-27T16:58:12+08:00"
 }

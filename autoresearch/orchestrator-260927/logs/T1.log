@@ -1,0 +1,11 @@
+[设备] 4a964
+[会话] collections/2026-09-27/20260927-090400_generic_采集-generic-当前页面上的信息
+[截屏 1/2] screenshots/screen-0001.png (1440x3200)
+[提取] 新增 16 条（提取 16，重复 0）
+[截屏 2/2] screenshots/screen-0002.png (1440x3200)
+[提取] 新增 8 条（提取 13，重复 5）
+========================================================
+[完成] 原因: max_screens | 屏数: 2 | 提取: 29 | 去重后: 24
+[产物] collections/2026-09-27/20260927-090400_generic_采集-generic-当前页面上的信息
+[校验] python3 scripts/inspect_session.py collections/2026-09-27/20260927-090400_generic_采集-generic-当前页面上的信息
+[索引] collections/2026-09-27/20260927-090400_generic_采集-generic-当前页面上的信息/index.json (见 index.json)

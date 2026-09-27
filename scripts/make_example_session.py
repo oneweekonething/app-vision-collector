@@ -25,15 +25,32 @@ from collector.store import SessionStore  # noqa: E402
 EXAMPLE_ROOT = Path(__file__).resolve().parent.parent / "examples"
 
 
+def _load_font():
+    """优先取系统中文字体（示例截图的发送者是中文昵称）；失败退回默认字体。"""
+    from PIL import ImageFont
+
+    for path in (
+        "/System/Library/Fonts/PingFang.ttc",  # macOS
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux
+        "/System/Library/Fonts/STHeiti Light.ttc",
+    ):
+        try:
+            return ImageFont.truetype(path, 16)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
 def draw_chat_screenshot(messages: list[tuple[str, str, bool]], seed: int) -> bytes:
     """画一张简化版聊天界面截图（白/绿气泡）。"""
     from PIL import Image, ImageDraw
 
+    font = _load_font()
     width, height = 540, 1000
     image = Image.new("RGB", (width, height), color="#EDEDED")
     draw = ImageDraw.Draw(image)
     draw.rectangle([0, 0, width, 70], fill="#EDEDED")
-    draw.text((width / 2 - 60, 24), "AI hobby club (demo)", fill="black")
+    draw.text((width / 2 - 60, 24), "AI 兴趣群（示例截图）", fill="black", font=font)
 
     y = 110
     for sender, text, is_self in messages:
@@ -42,11 +59,11 @@ def draw_chat_screenshot(messages: list[tuple[str, str, bool]], seed: int) -> by
             x0, fill = width - 20 - bubble_width, "#95EC69"
         else:
             x0, fill = 20, "#FFFFFF"
-        draw.text((x0, y - 14), sender, fill="#888888")
+        draw.text((x0, y - 14), sender, fill="#888888", font=font)
         draw.rounded_rectangle(
             [x0, y, x0 + bubble_width, y + 46], radius=8, fill=fill
         )
-        draw.text((x0 + 12, y + 14), text, fill="black")
+        draw.text((x0 + 12, y + 14), text, fill="black", font=font)
         y += 110
 
     import io
@@ -60,9 +77,9 @@ FAKE_SCREENS = [
     {
         "summary": "群聊消息 3 条（demo 数据）",
         "messages": [
-            ("Wang", "hi, demo msg 1", False),
-            ("Me", "hello back", True),
-            ("Li Lei", "see you at 8pm", False),
+            ("王小明", "hi, demo msg 1", False),
+            ("我", "hello back", True),
+            ("李雷", "see you at 8pm", False),
         ],
         "items": [
             {"type": "message", "sender": "王小明", "text": "hi, demo msg 1",
@@ -79,8 +96,8 @@ FAKE_SCREENS = [
     {
         "summary": "上滑后的历史消息 2 条（其中 1 条与上一屏重复，演示去重）",
         "messages": [
-            ("Li Lei", "see you at 8pm", False),
-            ("Han Meimei", "bring the demo chart", False),
+            ("李雷", "see you at 8pm", False),
+            ("韩梅梅", "bring the demo chart", False),
         ],
         "items": [
             {"type": "message", "sender": "李雷", "text": "see you at 8pm",

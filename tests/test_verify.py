@@ -38,6 +38,16 @@ def build_session(root: Path) -> Path:
     return store.session_dir
 
 
+def build_empty_session(root: Path) -> Path:
+    """模拟导航失败/中断的会话：只创建、立即收尾，无任何截屏。"""
+    store = SessionStore.create(
+        data_dir=root, app="wechat", target="empty", task="空会话",
+        device_id="TEST", vlm_model="test-vlm", nav_model="test-nav",
+    )
+    store.finalize("error", error="导航失败")
+    return store.session_dir
+
+
 class VerifySessionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -72,6 +82,13 @@ class VerifySessionTest(unittest.TestCase):
         ok, report = verify_session(self.session_dir)
         self.assertFalse(ok)
         self.assertTrue(any("不符" in line for line in report))
+
+    def test_empty_session_fails(self):
+        """0 截屏的会话（导航失败/中断产物）不允许 vacuous 通过。"""
+        empty = build_empty_session(Path(self.tmp.name))
+        ok, report = verify_session(empty)
+        self.assertFalse(ok)
+        self.assertTrue(any("没有任何截图" in line for line in report))
 
 
 if __name__ == "__main__":

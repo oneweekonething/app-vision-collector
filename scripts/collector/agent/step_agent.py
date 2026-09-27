@@ -29,6 +29,12 @@ class StepAgent:
         self.verbose = verbose
         self.max_steps = config.nav_steps
         self.client = OpenAI(base_url=config.api_base, api_key=config.api_key)
+        # GLM-5.x 强制思考模型：调低思考档位（按模型名判定，详见 extractor）
+        self.extra_body = (
+            {"thinking": {"type": "enabled", "effort": "low"}}
+            if "glm-5" in config.nav_model.lower()
+            else None
+        )
         self.context: list[dict[str, Any]] = []
         self.step_count = 0
 
@@ -66,11 +72,13 @@ class StepAgent:
             ],
         })
 
+        kwargs: dict[str, Any] = {"extra_body": self.extra_body} if self.extra_body else {}
         response = self.client.chat.completions.create(
             model=self.config.nav_model,
             messages=self.context,
-            max_tokens=1000,
+            max_tokens=self.config.nav_max_tokens,  # autoglm-phone 等模型上限 4096
             temperature=0.0,
+            **kwargs,
         )
         content = response.choices[0].message.content or ""
         self._log(f"[模型决策] {content[:200]}")
@@ -79,10 +87,7 @@ class StepAgent:
         self.context[-1] = _strip_images(self.context[-1])
 
         action = _parse_action(content)
-        self.context.append({
-            "role": "assistant",
-            "content": f"<think>{action['thinking']}</think><answer>{action['answer']}</answer>",
-        })
+        self.context.append(_assistant_record(content))
 
         return self._execute(action)
 
@@ -125,6 +130,13 @@ def screenshot_b64(screenshot: adb.Screenshot) -> str:
     import base64
 
     return base64.b64encode(screenshot.png_bytes).decode("ascii")
+
+
+def _assistant_record(content: str) -> dict[str, Any]:
+    """把模型原始输出整理为写入历史的 assistant 消息。"""
+    match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+    thinking = match.group(1).strip() if match else ""
+    return {"role": "assistant", "content": f"<think>{thinking}</think><answer>{content.strip()}</answer>"}
 
 
 def _strip_images(message: dict[str, Any]) -> dict[str, Any]:

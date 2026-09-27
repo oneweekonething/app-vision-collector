@@ -57,6 +57,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=None, help="采集数据根目录（默认 ./collections）")
     parser.add_argument("--no-navigate", action="store_true",
                         help="跳过导航：假设手机已停在目标页面，直接开始采集")
+    parser.add_argument("--no-reset", action="store_true",
+                        help="导航前不按 Home 复位（默认复位，避免分屏/深层页面导致坐标错乱）")
     parser.add_argument("--no-scroll", action="store_true",
                         help="只采集当前一屏，不翻页")
     parser.add_argument("--check", action="store_true", help="只做环境自检，不采集")
@@ -141,6 +143,11 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
     try:
         # 1. 导航：由 StepAgent 把手机带到目标页面
         if not args.no_navigate:
+            if not args.no_reset:
+                # 从已知状态开始：分屏/悬浮窗/深层页面会让 0-999 坐标映射错乱，
+                # 导航模型会反复点空（实测一次跑 20 步烧光配额），先回桌面复位
+                adb.home(device_id)
+                time.sleep(1.2)
             nav_task = build_navigation_task(args.app, args.target, task)
             print(f"[导航] {nav_task.splitlines()[0]}")
             result = StepAgent(config, device_id=device_id, verbose=args.verbose).run(nav_task)

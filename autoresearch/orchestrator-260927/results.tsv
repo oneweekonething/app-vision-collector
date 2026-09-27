@@ -1,0 +1,7 @@
+test	session	strip	model	nav_model	screens	extracted	unique	inspect	items_nonempty	notes
+T1	collections/2026-09-27/20260927-090400_generic_采集-generic-当前页面上的信息	generic --no-navigate --max-screens 2	glm-5.3-flash	glm-5.3-flash	2	29	24	PASS	yes	视频播放页+分享面板；跨屏去重5条
+T2	collections/2026-09-27/20260927-090615_generic_采集-generic-当前页面上的信息	generic --no-navigate --max-screens 2（系统设置）	glm-5.3-flash	glm-5.3-flash	2	26	26	PASS	yes	Android设置页
+T3	collections/2026-09-27/20260927-090825_wechat_采集微信聊天列表页面上所有会话条目	wechat --no-navigate --no-scroll（聊天列表）	glm-5.3-flash	-	1	9	9	PASS	yes	9个会话含群聊发现
+T4	collections/2026-09-27/20260927-094131_wechat_AI通识交流	wechat --target AI通识交流 --max-screens 2	glm-5.3-flash	glm-5.3-flash	2	18	11	PASS	yes	导航finish正常；重叠去重7条
+T5	collections/2026-09-27/20260927-101925_wechat_AI通识交流	wechat --target AI通识交流 --nav-steps 12 --verbose	glm-4.5v	autoglm-phone	2	20	18	PASS	yes	5步导航含自愈重试
+T6	collections/2026-09-27/20260927-102315_wechat_AI通识交流	wechat --target AI通识交流 --max-screens 2	glm-4.5v	autoglm-phone	2	21	13	PASS	yes	末次全链路复测

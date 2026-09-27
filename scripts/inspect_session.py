@@ -100,6 +100,11 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     if totals.get("screens") != len(screenshots):
         problem(f"index.totals.screens={totals.get('screens')} 与台账截图数 {len(screenshots)} 不符")
 
+    # 5.5 空会话告警：证据先行原则下任何会话至少应有 1 张截图；
+    # 0 屏说明采集根本没开始（导航失败/配额中断），vacuous 通过会掩盖问题
+    if not screenshots:
+        problem(f"会话没有任何截图（stop_reason={index.get('stop_reason')}），疑似导航失败或运行中断")
+
     # 6. 每屏提取文件
     missing_extracted = [
         s["screen"] for s in screenshots
