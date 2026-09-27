@@ -1,7 +1,9 @@
 """触摸、滑动与文本输入。
 
-文本输入依赖设备上安装的 ADB Keyboard（com.android.adbkeyboard），
-通过广播 base64 编码内容实现对中文等非 ASCII 文本的输入——用于搜索框等场景。
+文本输入依赖设备上安装的 ADBKeyBoard 虚拟键盘（com.android.adbkeyboard，
+https://github.com/senzhk/ADBKeyBoard）：它监听系统广播并把文本提交到
+当前聚焦的输入框。本项目通过 ADB_INPUT_B64 广播 base64 编码内容，
+实现对中文等非 ASCII 文本的输入——用于搜索框等场景。
 
 输入法生命周期由 input_text_safe() 以事务方式管理：输入前切换到
 ADB Keyboard，无论输入成败都在 finally 中恢复原输入法。

@@ -88,19 +88,58 @@ powered by a vision language model.
 可选无线连接（拔线采集）：USB 连接状态下执行 `adb tcpip 5555`，
 拔线后 `adb connect <手机IP>:5555`。
 
-### 3. 安装 ADB Keyboard 输入法（搜索输入必需）
+### 3. 安装 ADBKeyBoard 虚拟键盘（中文搜索输入必需）
 
-ADB 原生 `input text` 不支持中文，导航 Agent 需要在搜索框输入中文
-（微信群名、小红书关键词）时必须借助 [AdbKeyboard](https://github.com/nicnocquee/AdbKeyboard)：
+ADB 原生的 `input text` 只支持 ASCII，输入中文会直接失败：
 
-1. 下载安装：从项目 Releases 下载 apk 安装；
-2. 手机启用：设置 → 系统 → 语言和输入法 → 勾选启用 **Adb Keyboard**
-   （无需设为默认——采集器以事务方式输入：输入前自动切换到 ADB Keyboard，
-   输入结束或失败后自动恢复原输入法）；
+```bash
+adb shell input text '你好'   # ✗ 不支持 Unicode
+```
+
+导航 Agent 需要在搜索框输入中文（微信群名、小红书关键词）时，借助
+[ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard)——一个专为自动化测试设计的
+**虚拟键盘输入法**。它没有可见的键盘界面，而是常驻监听系统广播：adb 发一条
+广播，它就把广播携带的文本"敲"进当前聚焦的输入框，因此能输入中文、Emoji
+等任意 Unicode，而采集器的输入动作与人工操作在 App 看来完全一致。
+
+**安装与启用：**
+
+1. 下载 APK：从 [Releases](https://github.com/senzhk/ADBKeyBoard/releases) 下载
+   （Android 16 设备选 v2.5-dev，其余选 v2.4-dev），执行
+   `adb install ADBKeyboard.apk`；也可源码构建（`./gradlew installDebug`）；
+2. 启用输入法（二选一）：
+   - 手机上：设置 → 系统 → 语言和输入法 → 勾选启用 **ADBKeyBoard**；
+   - 命令行：`adb shell ime enable com.android.adbkeyboard/.AdbIME`。
+
+   无需设为默认——采集器以事务方式输入：输入前自动切换到 ADBKeyBoard，
+   输入结束或失败后自动恢复原输入法；
 3. 验证：`adb shell ime list -s | grep adbkeyboard` 有输出。
 
-> 未安装的影响：仅无法完成"搜索进入"类导航（Type 动作失效），纯点击浏览类采集
-> 不受影响；也可手动把手机停到目标页面后用 `--no-navigate` 采集。
+**工作原理（采集器 `input_text_safe()` 的三步输入事务）：**
+
+```bash
+# 1. 切换到 ADBKeyBoard，并记下原输入法 id
+adb shell ime set com.android.adbkeyboard/.AdbIME
+# 2. 文本 base64 编码后经广播提交到聚焦的输入框（绕开 adb 对 UTF-8 的限制）
+adb shell am broadcast -a ADB_INPUT_B64 --es msg "$(printf 'AI交流群' | base64)"
+# 3. 恢复原输入法
+adb shell ime set <原输入法ID>
+```
+
+ADBKeyBoard 还提供其他广播动作，手工调试时可用（完整说明见其 README）：
+
+| 广播动作 | 参数 | 用途 |
+|----------|------|------|
+| `ADB_INPUT_B64` | `--es msg <base64>` | 任意 Unicode 文本（本项目使用） |
+| `ADB_INPUT_TEXT` | `--es msg 'text'` | 明文文本（Android 8+ 的 adb 不再接受 UTF-8 参数，故不采用） |
+| `ADB_INPUT_CODE` | `--ei code 67` | 按键码（如 67 = 退格） |
+| `ADB_INPUT_CHARS` | `--eia chars '128568,32'` | Unicode 码点，可输入 Emoji |
+| `ADB_EDITOR_CODE` | `--ei code 2` | 编辑动作（如 2 = IME_ACTION_GO） |
+| `ADB_CLEAR_TEXT` | — | 清空输入框 |
+
+> 未安装的影响：仅无法完成"搜索进入"类导航（Type 动作会失败并把原因反馈给
+> 导航模型），纯点击浏览类采集不受影响；也可手动把手机停到目标页面后用
+> `--no-navigate` 采集。
 
 ## 快速开始
 
