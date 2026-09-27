@@ -24,15 +24,15 @@ powered by a vision language model.
 
 ## 功能特性
 
-- 🤖 **VLM 双角色**：导航 Agent（Open-AutoGLM 风格 `do(action=...)` DSL）负责
+- 🤖 **VLM 双角色**：导航 Agent（`do(action=...)` 动作 DSL）负责
   在 App 内走到目标页面；提取 Agent 负责把单屏截图转成结构化 JSON。
 - 📱 **通用 App 支持**：内置微信、小红书攻略（`references/`），其他 App 按
   通用模板即可扩展。
 - 🔍 **全程证据留存**：截屏 → 提取 → 去重 → 台账，结构化目录保存，一条不漏。
 - 🧾 **溯源可校验**：SHA-256 完整性校验，`manifest.jsonl` + `index.json` 双层索引。
 - 🔁 **智能停止**：相邻屏重复率检测 + 最大屏数上限，增量采集不重复劳动。
-- 🌐 **任意 OpenAI 兼容视觉模型**：DashScope qwen3-vl-plus、智谱 GLM-4V /
-  AutoGLM 等，改环境变量即可切换。
+- 🌐 **任意 OpenAI 兼容视觉模型**：提取与导航模型均可通过环境变量配置，
+  填入任意支持视觉的模型即可。
 
 ## 系统架构
 
@@ -44,7 +44,7 @@ powered by a vision language model.
          ┌───────────────────────┼───────────────────────────┐
          ▼                       ▼                           ▼
   StepAgent 导航           SessionStore 证据存储        ExtractAgent 提取
-  (Open-AutoGLM DSL)       (screenshots/manifest)       (VLM, JSON)
+  (do(action=...) DSL)     (screenshots/manifest)       (VLM, JSON)
          │                       ▲                           │
          ▼                       │                           │
   ┌─────────────┐         ┌──────┴───────┐            ┌──────┴──────┐
@@ -102,10 +102,10 @@ git clone https://github.com/<you>/app-vision-collector.git
 cd app-vision-collector
 pip install -r requirements.txt
 
-export AVC_API_KEY="sk-..."            # 或 DASHSCOPE_API_KEY / BIGMODEL_API_KEY
-# export AVC_API_BASE="https://dashscope.aliyuncs.com/compatible-mode/v1"
-# export AVC_VLM_MODEL="qwen3-vl-plus" # 提取模型
-# export AVC_NAV_MODEL="autoglm-phone" # 导航模型
+export AVC_API_KEY="sk-..."            # 任意 OpenAI 兼容视觉模型服务的 API Key
+# export AVC_API_BASE="https://<openai-compatible-endpoint>/v1"
+# export AVC_VLM_MODEL="<vision-model>" # 提取模型，任意支持视觉的模型即可
+# export AVC_NAV_MODEL="<vision-model>" # 导航模型，任意支持视觉的模型即可
 ```
 
 ### 1. 自检
@@ -153,7 +153,7 @@ jq '.items[0]' collections/2026-09-27/<session-id>/index.json
     "sha256": "3f7a…e9c1",
     "captured_at": "2026-09-27T20:41:32+08:00",
     "screen_index": 3,
-    "model": "qwen3-vl-plus",
+    "model": "<vision-model>",
     "prompt_version": "extract-v1"
   }
 }

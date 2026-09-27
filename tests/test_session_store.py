@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from collector.adb.screenshot import Screenshot  # noqa: E402
 from collector.store import SessionStore  # noqa: E402
+from inspect_session import verify_session  # noqa: E402
 
 FAKE_PNG = b"\x89PNG-fake-evidence-bytes-" + b"x" * 2048
 
@@ -120,6 +121,29 @@ class SessionStoreTest(unittest.TestCase):
         self.store.finalize("completed")
         with self.assertRaises(RuntimeError):
             self.store.finalize("completed")
+
+    def test_extraction_failure_keeps_session_verifiable(self):
+        # 失败屏：截图照存，提取留失败记录（含最后一次模型输出），会话仍可整体通过校验
+        record = self.store.save_screenshot(make_screenshot())
+        self.store.save_extraction_failure(1, record, RuntimeError("JSON 解析失败"),
+                                           raw_response='{"items": [{"tex')
+        payload = json.loads(
+            (self.store.session_dir / "extracted" / "screen-0001.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["items"], [])
+        self.assertIn("JSON 解析失败", payload["error"])
+        self.assertEqual(payload["raw_response"], '{"items": [{"tex')
+
+        self.store.save_screenshot(make_screenshot())
+        self.store.save_extraction(2, {"path": "screenshots/screen-0002.png",
+                                       "sha256": record["sha256"],
+                                       "captured_at": record["captured_at"]},
+                                   {"items": [dict(ITEM_A)]})
+        index = json.loads(self.store.finalize("completed").read_text(encoding="utf-8"))
+        self.assertEqual(index["totals"]["extract_failures"], 1)
+        self.assertEqual(index["totals"]["items_unique"], 1)
+
+        ok, report = verify_session(self.store.session_dir)  # 失败屏不破坏每屏提取文件校验
+        self.assertTrue(ok, "\n".join(report))
 
 
 if __name__ == "__main__":

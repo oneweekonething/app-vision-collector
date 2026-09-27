@@ -24,6 +24,9 @@ class CollectorConfig:
     nav_steps: int = 20
     scroll_pause: float = 1.2
     extract_retries: int = 3
+    extract_max_tokens: int = 6000  # 推理模型（如 glm-5.3-flash）thinking 也计入预算
+    # 提取容错：单屏失败留证据后跳过，连续 N 屏失败才终止会话
+    max_extract_failures: int = 2
     # 停止条件：连续 N 屏没有新信息则认为已到边界
     no_new_stop_streak: int = 2
 

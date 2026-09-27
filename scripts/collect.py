@@ -148,7 +148,13 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
 
         # 2. 截屏 → 提取 → 翻页 循环
         extractor = ExtractAgent(config, app=args.app, task=task)
+
+        def scroll_forward() -> None:
+            adb.swipe_to_next_screen(device_id)
+            time.sleep(config.scroll_pause)
+
         no_new_streak = 0
+        consecutive_failures = 0
         max_screens = 1 if args.no_scroll else config.max_screens
 
         while store.screen_count < max_screens:
@@ -160,15 +166,25 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
             try:
                 extraction = extractor.extract(screenshot)
             except Exception as exc:
-                # 提取失败也要留下证据与台账，然后终止本轮
-                error = f"screen {store.screen_count}: {exc}"
-                print(f"[提取失败] {error}")
-                store._manifest({"event": "extraction_failed",
-                                 "screen": store.screen_count,
-                                 "error": error})
-                stop_reason = "extraction_failed"
-                break
+                # 单屏提取失败不中断采集：证据与台账照留，跳过该屏继续；
+                # 连续失败达到上限才认为模型/链路出了问题，终止会话
+                consecutive_failures += 1
+                print(f"[提取失败] screen {store.screen_count}: {exc}")
+                store.save_extraction_failure(
+                    store.screen_count, record, exc,
+                    raw_response=getattr(exc, "last_raw", ""))
+                if consecutive_failures >= config.max_extract_failures:
+                    stop_reason = "extraction_failed"
+                    error = f"连续 {consecutive_failures} 屏提取失败: {exc}"
+                    print(f"[停止] {error}")
+                    break
+                if store.screen_count >= max_screens:
+                    stop_reason = "max_screens"
+                    break
+                scroll_forward()
+                continue
 
+            consecutive_failures = 0
             stats = store.save_extraction(store.screen_count, record, extraction)
             print(f"[提取] 新增 {stats['new']} 条"
                   f"（提取 {stats['extracted']}，重复 {stats['duplicates']}）")
@@ -186,8 +202,7 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
                 stop_reason = "max_screens"
                 break
 
-            adb.swipe_to_next_screen(device_id)
-            time.sleep(config.scroll_pause)
+            scroll_forward()
 
     except KeyboardInterrupt:
         stop_reason = "interrupted"
@@ -200,8 +215,11 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
     index_path = store.finalize(stop_reason, error=error)
     totals = index_path and "见 index.json"
     print("=" * 56)
-    print(f"[完成] 原因: {stop_reason} | 屏数: {store.screen_count} | "
-          f"提取: {store.extracted_total} | 去重后: {len(store.items)}")
+    summary = (f"[完成] 原因: {stop_reason} | 屏数: {store.screen_count} | "
+               f"提取: {store.extracted_total} | 去重后: {len(store.items)}")
+    if store.extract_failures_total:
+        summary += f" | 提取失败: {store.extract_failures_total} 屏"
+    print(summary)
     print(f"[产物] {store.session_dir}")
     print(f"[校验] python3 scripts/inspect_session.py {store.session_dir}")
     print(f"[索引] {index_path} ({totals})")

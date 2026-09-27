@@ -8,6 +8,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+# 解析失败后的纯文本修复提示：不带截图、成本远低于带图重试；
+# 要求原样保留内容，保证修复不破坏证据忠实性。
+REPAIR_PROMPT = """下面的文本本应是一个 JSON 对象（含 items 数组），但按 JSON 解析失败了。
+解析错误: {error}
+
+请把它修复为合法 JSON：只输出 JSON 本身，不加解释、不加代码围栏。
+保持原有字段与条目不变，不要增删条目、不要改写任何文本内容。
+
+待修复文本:
+{raw}
+"""
+
 # 各 App 的提取侧提示（补充界面语义，降低误识别）
 APP_EXTRACT_HINTS = {
     "wechat": (
@@ -26,7 +38,9 @@ APP_EXTRACT_HINTS = {
 APP_NAV_TEMPLATES = {
     "wechat": (
         "打开微信，进入「{target}」的聊天页面。\n"
-        "优先在聊天列表里直接找；找不到就用顶部搜索框搜索「{target}」后进入。\n"
+        "优先在聊天列表里直接找：会话通常可见，直接点击该条目的中心位置；\n"
+        "如果点击后截图仍是列表（未进入），先 do(action=\"Wait\", duration=\"1 seconds\") 等待，\n"
+        "再在稍微不同的位置重试；重试 2 次仍不进去就改用搜索方式。\n"
         "进入后停留在聊天消息页面即可，不要发送任何消息。"
     ),
     "xiaohongshu": (

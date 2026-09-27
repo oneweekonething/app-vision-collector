@@ -44,11 +44,18 @@
   "extracted_at": "2026-09-27T15:30:05+08:00",
   "screen_summary": "群聊消息 8 条",
   "items": [ ... 模型输出的条目数组 ... ],
-  "raw_response": "模型原始返回文本（含 JSON）"
+  "raw_response": "模型原始返回文本（含 JSON）",
+  "repair_response": "（可选）解析失败经纯文本修复成功时，修复调用的原始输出"
 }
 ```
 
 保留 `raw_response` 是为了审计模型行为：即使解析有误也能回查。
+
+**提取失败的屏**同样会有 `extracted/screen-NNNN.json`：`items` 为空数组、
+`raw_response` 为最后一次模型原始输出（可能是不完整/非法 JSON）、
+多一个 `error` 字段记录失败原因；截图与台账照常留存，
+会话继续采集后续屏（连续多屏失败才终止）。`index.json` 的
+`totals.extract_failures` 记录失败屏数。
 
 ## manifest.jsonl —— 追加式事件台账
 
@@ -59,7 +66,7 @@
 | `session_started` | 会话元数据全量 |
 | `screenshot` | `screen`, `path`, `sha256`, `bytes`, `width/height`, `captured_at` |
 | `items` | `screen`, `screenshot_sha256`, `extracted/new/duplicates`, `item_ids` |
-| `extraction_failed` | `screen`, `error` |
+| `extraction_failed` | `screen`, `screenshot_sha256`, `error` |
 | `session_finished` | `stop_reason`, `error`, 各项 totals |
 
 ## index.json —— 条目目录（去重后）
@@ -68,7 +75,7 @@
 {
   "session_id": "...",
   "stop_reason": "no_new_items",
-  "totals": {"screens": 3, "items_extracted": 21, "items_unique": 19, "duplicates": 2},
+  "totals": {"screens": 3, "items_extracted": 21, "items_unique": 19, "duplicates": 2, "extract_failures": 0},
   "items": [
     {
       "item_id": "itm_000001",

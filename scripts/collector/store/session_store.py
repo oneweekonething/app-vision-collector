@@ -58,6 +58,7 @@ class SessionStore:
         self._item_seq = 0
         self.extracted_total = 0
         self.duplicates_total = 0
+        self.extract_failures_total = 0
         self._finished = False
 
     # ---------------------------------------------------------------- create
@@ -149,6 +150,8 @@ class SessionStore:
             "items": items,
             "raw_response": raw,
         }
+        if extraction.get("repair_response"):
+            payload["repair_response"] = extraction["repair_response"]
         _write_json(self.extracted_dir / f"screen-{screen:04d}.json", payload)
 
         new_ids: list[str] = []
@@ -199,6 +202,39 @@ class SessionStore:
         })
         return {"extracted": extracted, "new": new, "duplicates": extracted - new}
 
+    def save_extraction_failure(
+        self,
+        screen: int,
+        screenshot_record: dict[str, Any],
+        error: Exception | str,
+        raw_response: str = "",
+    ) -> None:
+        """登记一屏提取失败：extracted/ 留失败记录，保证每屏都有提取文件。
+
+        失败屏的截图已在 save_screenshot 落盘，证据链不断——只是该屏
+        没有可入库的条目。校验器要求每屏都有提取文件，失败屏也不能缺。
+        raw_response 存最后一次模型原始输出（可能是不完整/非法 JSON），
+        供审计回查模型当时到底输出了什么。
+        """
+        message = str(error)
+        self.extract_failures_total += 1
+        _write_json(self.extracted_dir / f"screen-{screen:04d}.json", {
+            "screen": screen,
+            "model": self._session_metadata["vlm_model"],
+            "prompt_version": PROMPT_VERSION,
+            "extracted_at": _now_iso(),
+            "screen_summary": "",
+            "items": [],
+            "raw_response": raw_response,
+            "error": message,
+        })
+        self._manifest({
+            "event": "extraction_failed",
+            "screen": screen,
+            "screenshot_sha256": screenshot_record["sha256"],
+            "error": message,
+        })
+
     # ----------------------------------------------------------------- finish
 
     def finalize(self, stop_reason: str, error: str | None = None) -> Path:
@@ -217,6 +253,7 @@ class SessionStore:
                 "items_extracted": self.extracted_total,
                 "items_unique": len(self.items),
                 "duplicates": self.duplicates_total,
+                "extract_failures": self.extract_failures_total,
             },
             "items": self.items,
         }
