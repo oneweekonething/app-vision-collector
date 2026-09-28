@@ -81,6 +81,32 @@ class ActionGuardTest(unittest.TestCase):
             verdict = self.guard.check(action)
             self.assertTrue(verdict.allowed, action)
 
+    def test_ui_texts_independent_layer(self):
+        # 模型自报干净，但控件树显示目标是"发送" → 独立核验层拒绝
+        action = {
+            "kind": "do", "name": "Tap", "element": [940, 930],
+            "intent": "open_detail", "target_text": "按钮",
+        }
+        verdict = self.guard.check(action, ui_texts=["发送"])
+        self.assertFalse(verdict.allowed)
+        self.assertEqual(verdict.code, "deny_write_action")
+        self.assertIn("独立核验", verdict.detail)
+
+        # 控件树文本干净 → 放行
+        verdict = self.guard.check(action, ui_texts=["AI交流群", ""])
+        self.assertTrue(verdict.allowed)
+
+        # dump 失败（None）/ 无文本（[]）→ 退化为自报判定，本例自报干净放行
+        self.assertTrue(self.guard.check(action, ui_texts=None).allowed)
+        self.assertTrue(self.guard.check(action, ui_texts=[]).allowed)
+
+    def test_ui_texts_english_keywords(self):
+        verdict = self.guard.check({
+            "kind": "do", "name": "Tap", "element": [500, 900],
+            "intent": "open", "target_text": "x",
+        }, ui_texts=["Follow"])
+        self.assertFalse(verdict.allowed)
+
 
 if __name__ == "__main__":
     unittest.main()

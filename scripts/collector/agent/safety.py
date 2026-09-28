@@ -1,17 +1,23 @@
 """ActionGuard：导航动作的只读语义护栏。
 
 动作集合本身只含浏览类操作，但 Tap 完全可能落在"发送 / 点赞 / 支付 /
-删除"等写操作按钮上——只靠动作白名单挡不住这种语义级写操作。本模块
-在 ADB 执行之前对每个动作做最后一道检查：
+删除"等写操作按钮上。本模块在 ADB 执行之前对每个动作做最后一道检查：
 
     VLM decision → parse action → ActionGuard → ADB execute
                                           ├─ allow
                                           ├─ deny（写操作/坐标非法）→ 反馈模型重新规划
                                           └─ 连续 deny 达阈值 → 终止导航
 
-判定依据是模型随动作申报的 intent 与 target_text（提示词要求提供），
-以及坐标的合法性。这是软护栏而非形式化验证：模型瞒报意图时依赖
-"动作集合不含写原语"这一层兜底，两层共同把写操作风险压到最低。
+判定共三层，逐层收口：
+1. 动作集合不含写原语（Tap/Swipe/Type/Back/Home/Launch/Wait）；
+2. 模型自报语义：intent / target_text 命中写操作关键词即拒绝——模型
+   既是 Planner 又写安全元数据，这一层会被瞒报绕过；
+3. 独立核验：uiautomator 控件树给出点击坐标处的真实控件文本
+   （见 adb/uitree.py），与模型自报无关，命中关键词即拒绝。
+
+第 3 层是安全域隔离的关键：模型把"发送"按钮谎报成 open_detail 也拦得住。
+控件树不可用时（FLAG_SECURE 等场景 dump 失败）自动退化为第 2 层并记录
+降级。这仍是纵深防御而非形式化验证。
 """
 
 from __future__ import annotations
@@ -59,7 +65,14 @@ class GuardVerdict:
 class ActionGuard:
     """对解析后的动作做只读安全检查。"""
 
-    def check(self, action: dict[str, Any]) -> GuardVerdict:
+    def check(self, action: dict[str, Any],
+              ui_texts: list[str] | None = None) -> GuardVerdict:
+        """判定一个动作是否放行。
+
+        ui_texts 为 uiautomator 控件树给出的点击目标文本（与模型自报
+        无关的独立事实来源）：任一文本命中写操作关键词即拒绝。None 表示
+        控件树不可用（dump 失败），此时退化为仅自报语义判定。
+        """
         if action.get("kind") == "finish":
             return GuardVerdict(True, "allow")
 
@@ -74,7 +87,11 @@ class ActionGuard:
         if not verdict.allowed:
             return verdict
 
-        return self._check_semantics(name, action)
+        verdict = self._check_semantics(name, action)
+        if not verdict.allowed:
+            return verdict
+
+        return self._check_ui_texts(name, ui_texts)
 
     # ------------------------------------------------------------------ parts
 
@@ -113,6 +130,27 @@ class ActionGuard:
                 False, "deny_invalid_action",
                 "Type 动作的 text 为空；如需清除输入框请用 Back 关闭键盘。",
             )
+        return GuardVerdict(True, "allow")
+
+    def _check_ui_texts(self, name: str, ui_texts: list[str] | None) -> GuardVerdict:
+        """独立核验层：控件树上点击位置的实际文本命中写关键词即拒绝。
+
+        这一层不依赖模型自报——即使模型把"发送"按钮申报成
+        intent="open_detail"、target_text="按钮"，只要控件树显示该
+        坐标落在文本为"发送"的可点击控件上，动作仍会被拦截。
+        """
+        if not ui_texts:
+            return GuardVerdict(True, "allow")
+        for text in ui_texts:
+            haystack = text.lower()
+            for keyword in WRITE_KEYWORDS:
+                if keyword in haystack:
+                    return GuardVerdict(
+                        False, "deny_write_action",
+                        f"界面控件树显示点击目标文本「{text}」命中写操作关键词"
+                        f"「{keyword}」（独立核验，与模型自报无关），已拒绝执行 {name}。"
+                        "请改用浏览类方式完成导航，不要触发任何写操作。",
+                    )
         return GuardVerdict(True, "allow")
 
     def _deny_write(self, name: str, keyword: str, where: str) -> GuardVerdict:

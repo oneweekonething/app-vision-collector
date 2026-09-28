@@ -165,6 +165,7 @@ def device_mocks():
         "home": mock.patch("collector.adb.home"),
         "type_safe": mock.patch("collector.adb.input_text_safe"),
         "launch": mock.patch("collector.adb.launch_app", return_value=True),
+        "ui_texts": mock.patch("collector.adb.ui_texts_at_point", return_value=[]),
     }
 
 
@@ -260,6 +261,46 @@ class GuardIntegrationTest(unittest.TestCase):
         ] * 3)
         self.assertEqual(result.reason, "safety_aborted")
         mocks["tap"].assert_not_called()
+
+    def test_ui_tree_catches_mislabeled_send_button(self):
+        # 模型谎报：真实是"发送"按钮，自报却是 open_detail/按钮。
+        # 控件树独立核验必须拦住——这是安全域隔离的关键场景。
+        lying = ('do(action="Tap", element=[940, 930], intent="open_detail", '
+                 'target_text="按钮")')
+        config = CollectorConfig(api_key="test", nav_steps=10)
+        client = FakeClient([lying] * 3)
+        agent = StepAgent(config, device_id="TEST", client=client)
+        with mock.patch("collector.adb.capture", return_value=fake_screenshot()), \
+                mock.patch("collector.adb.get_current_app", return_value="unknown"), \
+                mock.patch("collector.adb.get_screen_size", return_value=(1080, 2400)), \
+                mock.patch("collector.adb.tap") as tap_mock, \
+                mock.patch("collector.adb.ui_texts_at_point",
+                           return_value=["发送"]) as ui_mock:
+            result = agent.run("进入群聊")
+        self.assertFalse(result.success)
+        self.assertEqual(result.reason, "safety_aborted")
+        tap_mock.assert_not_called()
+        self.assertEqual(ui_mock.call_count, 3)
+        guard_feedback = [m for m in agent.context
+                          if m["role"] == "user" and "GUARD" in str(m["content"])]
+        self.assertIn("独立核验", str(guard_feedback[0]["content"]))
+
+    def test_ui_tree_degrades_to_self_report_on_dump_failure(self):
+        # dump 失败返回 None → 退化为仅自报语义判定，干净自报放行
+        tap = ('do(action="Tap", element=[500, 300], intent="open_chat", '
+               'target_text="AI交流群")')
+        config = CollectorConfig(api_key="test", nav_steps=10)
+        client = FakeClient([tap, "finish(message=\"ok\")", "YES\nok"])
+        agent = StepAgent(config, device_id="TEST", client=client)
+        with mock.patch("collector.adb.capture", return_value=fake_screenshot()), \
+                mock.patch("collector.adb.get_current_app", return_value="unknown"), \
+                mock.patch("collector.adb.get_screen_size", return_value=(1080, 2400)), \
+                mock.patch("collector.adb.tap") as tap_mock, \
+                mock.patch("collector.adb.ui_texts_at_point", return_value=None) as ui_mock:
+            result = agent.run("进入群聊")
+        self.assertTrue(result.success)
+        tap_mock.assert_called_once()
+        ui_mock.assert_called_once()
 
 
 class FailureFeedbackTest(unittest.TestCase):

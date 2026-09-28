@@ -39,6 +39,8 @@ class CollectorConfig:
     nav_verify: bool = True
     nav_device_failures: int = 3
     nav_guard_denials: int = 3
+    # Tap 前用 uiautomator 控件树独立核验点击目标（dump 失败自动降级）
+    nav_ui_verify: bool = True
 
     @classmethod
     def from_env(cls) -> CollectorConfig:
@@ -65,4 +67,5 @@ class CollectorConfig:
             nav_steps=int(os.environ.get("AVC_NAV_STEPS", "20")),
             scroll_pause=float(os.environ.get("AVC_SCROLL_PAUSE", "1.2")),
             nav_verify=os.environ.get("AVC_NAV_VERIFY", "1") not in {"0", "false", "no"},
+            nav_ui_verify=os.environ.get("AVC_NAV_UI_VERIFY", "1") not in {"0", "false", "no"},
         )

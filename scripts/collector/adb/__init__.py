@@ -19,6 +19,7 @@ from collector.adb.input import (
     type_text,
 )
 from collector.adb.screenshot import Screenshot, ScreenshotError, capture
+from collector.adb.uitree import dump_ui_xml, ui_texts_at_point
 
 __all__ = [
     "AdbCommandError",
@@ -38,4 +39,6 @@ __all__ = [
     "home",
     "type_text",
     "input_text_safe",
+    "dump_ui_xml",
+    "ui_texts_at_point",
 ]

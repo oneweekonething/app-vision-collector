@@ -9,11 +9,13 @@
 3. **可审计**：manifest 台账只追加且逐条 fsync；提取原始输出留档；
    SHA-256 全程可验；所有落盘走 tmp + fsync + 原子 rename，进程中断
    不会留下半个文件。
-4. **只读动作面（两层防线）**：导航动作集合不含写原语；每个动作执行前
-   经 ActionGuard 语义护栏——模型申报 intent / target_text，命中
-   "发送 / 点赞 / 支付 / 删除 / 授权"等写操作语义即拒绝执行并反馈模型
-   重新规划，连续拦截则终止导航。护栏基于模型申报的语义判定，属于
-   纵深防御而非形式化验证。
+4. **只读动作面（三层防线）**：导航动作集合不含写原语；动作执行前经
+   ActionGuard——模型自报的 intent / target_text 命中"发送 / 点赞 /
+   支付 / 删除 / 授权"等写操作语义即拒绝；Tap 还会经 uiautomator
+   控件树**独立核验**（点击坐标处真实控件文本命中关键词即拒绝，
+   与模型自报无关——模型把"发送"谎报成 open_detail 也拦得住）。
+   dump 失败（FLAG_SECURE 等）自动降级为仅自报判定并记录日志。
+   连续拦截则终止导航。这是纵深防御而非形式化验证。
 5. **失败即停**：导航返回结构化 NavigationResult（成功 / 失败原因 /
    步数 / 当前 App），finish 后由模型核验"当前页是否满足目标"；导航
    失败立即终止会话，不把错误页面的数据当成合法证据入库。
@@ -25,12 +27,14 @@ collect.py
   │
   ├─ adb.connection.ensure_device()        设备确认
   │
+  ├─ SessionStore.create()                 ── 唯一会话目录（微秒+uuid，不允许复用）
+  │
   ├─ StepAgent.run(nav_task) → NavigationResult   ── 导航阶段（可选）
   │    截屏 ──▶ nav VLM (autoglm-phone)    do(action=...)/finish(...)
   │      ▲            │ 解析（DSL 优先，兼容 JSON）
   │      │            ▼
   │      │      ActionGuard 只读护栏 ── deny ─▶ [GUARD] 反馈，重新规划
-  │      │            │ allow
+  │      │            │ allow（自报语义 + 控件树独立核验）
   │      │            ▼
   │      └── adb.input 执行 ◀──┘            Tap/Swipe/Type/Back/Home/Launch/Wait
   │           （失败以 [ACTION_FAILED] 反馈模型，连续失败终止）
@@ -55,6 +59,10 @@ collect.py
   跨机型通用；
 - 动作携带 intent / target_text 交 ActionGuard 判定；被拦截的动作以
   [GUARD] 消息反馈，模型换只读路径重新规划；
+- Tap 在自报判定通过后，还经 uiautomator 控件树独立核验：取点击
+  坐标处内层节点与可点击祖先的 text/content-desc，命中写操作关键词
+  即拒绝。这一层与模型输出无关，是安全域隔离的关键；dump 不可用时
+  降级为仅自报判定（`AVC_NAV_UI_VERIFY=0` 可关闭）；
 - adb 命令失败抛 AdbCommandError，以 [ACTION_FAILED] 观察反馈模型，
   连续失败（默认 3 次）以 device_error / action_failed 终止；
 - 文本输入走 input_text_safe 事务：切换 ADB Keyboard → 输入 →
@@ -76,8 +84,10 @@ collect.py
 - 指纹 = SHA-1(type|sender|title|text[|time_hint])。聊天类条目
   （message/comment/system）带可见时间戳时并入指纹；同一个人不同时刻
   发的相同文字因此不会被误杀。
-- 聊天类只对最近 3 屏做滑窗判重（60% 重叠下一条内容最多跨 3 屏可见）：
-  窗口内的重复是重叠重采，窗口外的相同内容视为真实重复、保留入库。
+- 聊天类只对最近 5 屏做滑窗判重：60% 重叠下普通内容最多跨 3 屏，
+  但超长消息 / 长图文 / 大卡片可占一屏以上、连续出现 4~5 屏——窗口 3
+  会把它们的尾部重采误判为真实重复再次入库，取 5 留余量。窗口内的
+  重复是重叠重采，窗口外的相同内容视为真实重复、保留入库。
   非聊天类（note/product 等，卡片有标题）仍全局判重。
 - 停止 = "连续 N 屏零新条目"且画面位移消失（相邻屏 8x8 感知哈希汉明
   距离 ≤ 4，说明翻页已无效），或宽限屏数（默认 +2）用尽；`--max-screens`

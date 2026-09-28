@@ -5,7 +5,9 @@
 ```
 <AVC_DATA_DIR>/                          # 默认 ./collections
 └── 2026-09-27/                          # 按日期分桶
-    └── 20260927-153000_wechat_AI交流群/   # <时间>_<app>_<目标slug>
+    └── 20260927-153000-483921-a1b2c3d4_wechat_AI交流群/
+        #                  └微秒┘ └uuid8┘  目录名全局唯一：
+        #  <秒级时间>-<微秒>-<随机后缀>_<app>_<目标slug>，并行/重跑不复用
         ├── session.json
         ├── screenshots/
         │   ├── screen-0001.png

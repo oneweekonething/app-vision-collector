@@ -124,19 +124,29 @@ class SessionStoreTest(unittest.TestCase):
 
     def test_real_message_repeat_beyond_window_kept(self):
         # 张三两次发"收到"且截图无时间戳：相邻屏（重叠重采）去重，
-        # 窗口外的真实重复保留——旧版全局指纹会把第二条误杀
+        # 窗口外的真实重复保留——旧版全局指纹会把第二条误杀。
+        # 默认窗口 5：普通内容跨 3 屏，长内容留到 5 屏余量
         repeat = {"type": "message", "sender": "张三", "text": "收到",
                   "time_hint": None, "title": None, "extra": {}}
-        for screen in (1, 2, 3):
+        for screen in range(1, 7):
             record = self.store.save_screenshot(make_screenshot())
             stats = self.store.save_extraction(screen, record, {"items": [dict(repeat)]})
             self.assertEqual(stats["new"], 0 if screen > 1 else 1)
         record = self.store.save_screenshot(make_screenshot())
-        stats = self.store.save_extraction(4, record, {"items": [dict(repeat)]})
-        self.assertEqual(stats["new"], 0)   # 仍在滑窗内（60% 重叠最多跨 3 屏）
-        record = self.store.save_screenshot(make_screenshot())
-        stats = self.store.save_extraction(5, record, {"items": [dict(repeat)]})
+        stats = self.store.save_extraction(7, record, {"items": [dict(repeat)]})
         self.assertEqual(stats["new"], 1)   # 出窗 → 真实重复，保留
+
+    def test_session_dir_unique_under_rapid_recreate(self):
+        # 同一毫秒内连续创建两个会话：目录必须不同（微秒+uuid，不允许复用）
+        other = SessionStore.create(
+            data_dir=self.data_dir, app="wechat", target="测试群",
+            task="单测任务", device_id="TEST123",
+            vlm_model="test-vlm", nav_model="test-nav",
+        )
+        self.assertNotEqual(self.store.session_dir, other.session_dir)
+        self.assertTrue(other.session_dir.is_dir())
+        self.assertRegex(other.session_dir.name,
+                         r"^\d{8}-\d{6}-\d{6}-[0-9a-f]{8}_wechat_")
 
     def test_same_text_different_time_not_merged(self):
         first = {"type": "message", "sender": "张三", "text": "收到",

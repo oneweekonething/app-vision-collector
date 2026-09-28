@@ -27,7 +27,7 @@ from openai import OpenAI
 from collector import adb
 from collector.adb.connection import AdbCommandError
 from collector.agent.prompts import NAV_VERIFY_PROMPT, build_nav_system_prompt
-from collector.agent.safety import ActionGuard
+from collector.agent.safety import ActionGuard, GuardVerdict
 from collector.config import CollectorConfig
 
 # 设备/命令类异常：可反馈重试，连续达到阈值即终止导航
@@ -169,11 +169,18 @@ class StepAgent:
         return self._execute_action(action)
 
     def _execute_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """护栏检查 + 执行动作，返回 {finished, message}。"""
+        """护栏检查（自报语义 + 控件树独立核验）+ 执行动作，返回 {finished, message}。"""
         if action["kind"] == "finish":
             return {"finished": True, "message": action.get("message", "finished")}
 
+        name = str(action.get("name", ""))
+        tap_pixel: tuple[int, int] | None = None
+        if name == "Tap":
+            tap_pixel = _denormalize(action["element"], self.device_id)
+
         verdict = self.guard.check(action)
+        if verdict.allowed and tap_pixel is not None and self.config.nav_ui_verify:
+            verdict = self._verify_tap_target(action, tap_pixel)
         if not verdict.allowed:
             self._guard_streak += 1
             self._log(f"[护栏拦截 {self._guard_streak}/{self.config.nav_guard_denials}] "
@@ -187,11 +194,9 @@ class StepAgent:
             return {"finished": False, "message": ""}
         self._guard_streak = 0
 
-        name = action.get("name", "")
         try:
             if name == "Tap":
-                x, y = _denormalize(action["element"], self.device_id)
-                adb.tap(x, y, self.device_id)
+                adb.tap(*tap_pixel, self.device_id)
             elif name == "Swipe":
                 x1, y1 = _denormalize(action["start"], self.device_id)
                 x2, y2 = _denormalize(action["end"], self.device_id)
@@ -219,6 +224,23 @@ class StepAgent:
 
         self._fail_streak = 0
         return {"finished": False, "message": ""}
+
+    def _verify_tap_target(self, action: dict[str, Any],
+                           pixel: tuple[int, int]) -> GuardVerdict:
+        """控件树独立核验：uiautomator 给出点击坐标处的真实控件文本。
+
+        模型自报语义干净时仍可能谎报/漏报（把"发送"按钮写成 open_detail），
+        这一层与模型无关。dump 失败（FLAG_SECURE 等）返回 None，退化为
+        仅自报判定并记录降级。
+        """
+        ui_texts = adb.ui_texts_at_point(pixel[0], pixel[1], self.device_id)
+        if ui_texts is None:
+            self._log("[护栏降级] uiautomator dump 不可用，本次 Tap 仅按自报语义核验")
+            return self.guard.check(action)
+        verdict = self.guard.check(action, ui_texts=ui_texts)
+        if ui_texts and verdict.allowed:
+            self._log(f"[控件核验] 点击目标文本: {ui_texts}")
+        return verdict
 
     def _note_failure(self, kind: str, detail: str) -> None:
         """登记一次动作级失败：反馈模型 + 连续失败达到阈值则终止。"""

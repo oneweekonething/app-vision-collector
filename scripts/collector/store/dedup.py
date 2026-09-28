@@ -14,6 +14,11 @@
   远处重现基本就是重复曝光）。
 
 同屏内的完全相同指纹总是判重（提取器重复输出）。
+
+窗口取 5 而非理论最小值 3：60% 重叠下普通内容最多跨 3 屏，但超长
+消息 / 长图文 / 大卡片可占一屏以上、连续出现 4~5 屏——窗口 3 会把
+它们的尾部重采误判为"真实重复"再次入库，5 屏留出余量，代价仅是
+真实重复晚几屏才被承认。
 """
 
 from __future__ import annotations
@@ -48,8 +53,8 @@ def fingerprint(item: dict[str, Any]) -> str:
 class Deduplicator:
     """跨屏去重器：聊天类滑窗判重，非聊天类全局判重。"""
 
-    def __init__(self, window: int = 3):
-        # 60% 重叠 → 一条内容最多跨 ceil(1/0.4)=3 屏可见
+    def __init__(self, window: int = 5):
+        # 普通内容最多跨 3 屏；长内容（长消息/大卡片）可达 4~5 屏，取 5 留余量
         self.window = max(1, window)
         self._global: set[str] = set()          # 全部已收录指纹（非聊天类判重用）
         self._screen_sets: dict[int, set[str]] = {}  # 各屏收录的指纹

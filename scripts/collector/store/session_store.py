@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -73,12 +74,16 @@ class SessionStore:
         vlm_model: str,
         nav_model: str,
     ) -> SessionStore:
-        """创建新会话目录并写入元数据与首条台账事件。"""
+        """创建新会话目录并写入元数据与首条台账事件。
+
+        目录名带微秒 + 随机后缀并以 exist_ok=False 创建：同一秒并行启动、
+        或失败后立刻重跑，都不会落进同一个目录破坏证据链。
+        """
         started = datetime.now()
-        session_id = started.strftime("%Y%m%d-%H%M%S")
+        session_id = f"{started.strftime('%Y%m%d-%H%M%S-%f')}-{uuid.uuid4().hex[:8]}"
         slug = _slugify(target or task)
         session_dir = data_dir / started.strftime("%Y-%m-%d") / f"{session_id}_{app}_{slug}"
-        session_dir.mkdir(parents=True, exist_ok=True)
+        session_dir.mkdir(parents=True, exist_ok=False)
         (session_dir / "screenshots").mkdir(exist_ok=True)
         (session_dir / "extracted").mkdir(exist_ok=True)
 
