@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import random
+import time
 
 from collector.adb.connection import (
     AdbCommandError,
@@ -113,14 +114,25 @@ def restore_keyboard(ime: str | None, device_id: str | None = None) -> None:
         run_adb(["shell", "ime", "set", ime], device_id=device_id, timeout=10, check=True)
 
 
-def input_text_safe(text: str, device_id: str | None = None) -> None:
+def input_text_safe(text: str, device_id: str | None = None) -> bool:
     """事务式文本输入：切换输入法 → 输入 → 无论成败恢复原输入法。
 
-    StepAgent 的 Type 动作必须走这个入口，保证采集结束后用户的
-    默认输入法不被留在 ADB Keyboard 上。
+    返回 True 表示文本已提交。失败语义区分两级：
+    - 切换/输入本身失败：抛 AdbCommandError，上层按动作失败处理；
+    - 输入已成功、仅 IME 恢复失败：重试一次后降级为警告并返回 True——
+      此时按动作失败重试会导致同一文本被输入两遍。
     """
     previous_ime = ensure_adb_keyboard(device_id)
     try:
         type_text(text, device_id)
     finally:
-        restore_keyboard(previous_ime, device_id)
+        try:
+            restore_keyboard(previous_ime, device_id)
+        except AdbCommandError as exc:
+            try:
+                time.sleep(0.6)
+                restore_keyboard(previous_ime, device_id)
+            except AdbCommandError:
+                print(f"[输入] 警告：文本已输入，但输入法恢复失败（{exc}），"
+                      "请手动把默认输入法切回常用项")
+    return True

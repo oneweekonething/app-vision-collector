@@ -126,6 +126,31 @@ class InputTextSafeTest(unittest.TestCase):
         set_calls = [c for c in commands if c[:3] == ["shell", "ime", "set"]]
         self.assertEqual(len(set_calls), 2)  # 切换 + 失败后的恢复
 
+    def test_restore_failure_after_successful_type_is_not_action_failure(self):
+        # 输入已生效、仅 IME 恢复失败：不能按动作失败抛出（否则上层重试
+        # 会把同一文本输入两遍），应重试恢复后降级为警告
+        commands = []
+
+        def run(args, device_id=None, timeout=15, binary=False, check=False):
+            commands.append(list(args))
+            marker = " ".join(args)
+            # 只让最后一次恢复（目标是原输入法，非 ADB_IME）失败
+            if marker.startswith("shell ime set") and adb_input.ADB_IME not in marker \
+                    and commands.count(["shell", "ime", "set", LATIN_IME]) >= 1:
+                if check:
+                    raise AdbCommandError(args, 1, "恢复失败")
+                return subprocess.CompletedProcess(["adb"], 1, stdout="", stderr="")
+            return subprocess.CompletedProcess(["adb"], 0, stdout="", stderr="")
+
+        with self._patch_ime(), \
+                mock.patch.object(adb_input, "run_adb", side_effect=run), \
+                mock.patch.object(adb_input.time, "sleep"):
+            result = adb_input.input_text_safe("AI通识", "TEST")
+
+        self.assertTrue(result)  # 输入已生效 → 不抛
+        restores = [c for c in commands if c[:4] == ["shell", "ime", "set", LATIN_IME]]
+        self.assertEqual(len(restores), 2)  # 恢复重试了一次
+
 
 if __name__ == "__main__":
     unittest.main()

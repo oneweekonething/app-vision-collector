@@ -486,18 +486,20 @@ def _coerce_number(value: Any) -> int | float:
 # ------------------------------------------------------------- verification
 
 def _parse_verdict(content: str) -> tuple[bool | None, str]:
-    """解析目标核验输出，返回 (结论, 说明)；无法解析时结论为 None。"""
-    text = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    """解析目标页核验输出，返回 (结论, 说明)；无法严格解析时结论为 None。
+
+    这是"错误页面不得进入采集"的防线，必须 fail-closed：只接受第一条
+    非空行严格为 YES/NO/是/否（允许尾部标点），绝不在全文里搜索
+    YES/NO 字样——否则 "I cannot say YES because..." 会被误判为通过。
+    """
+    text = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
     reason = " ".join(text.split())[:160]
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    first_line = lines[0] if lines else ""
-    match = re.match(r"(?i)\b(yes|no)\b", first_line)
-    if match:
-        return match.group(1).lower() == "yes", reason
-    if first_line in {"是", "否"}:
-        return first_line == "是", reason
-    match = re.search(r"(?i)\b(yes|no)\b", text)
-    if match:
-        return match.group(1).lower() == "yes", reason
+    if lines:
+        first = re.sub(r"[。.!！?？~\s]+$", "", lines[0]).upper()
+        if first in {"YES", "是"}:
+            return True, reason
+        if first in {"NO", "否"}:
+            return False, reason
     return None, reason

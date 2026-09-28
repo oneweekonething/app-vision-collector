@@ -106,12 +106,20 @@ def run_check(config: CollectorConfig) -> int:
     return 1
 
 
-def build_navigation_task(app: str, target: str, task: str) -> str:
-    """按 App 组装导航任务描述（攻略见 references/*.md）。"""
+def build_navigation_task(app: str, target: str, explicit_task: str = "") -> str:
+    """组装导航任务描述（攻略见 references/*.md）。
+
+    优先级：显式 --task > App 导航模板（含 {target}）> 通用兜底。
+    显式任务永远不被模板覆盖——模板只在调用者只给了 target 时补齐
+    "先打开哪个 App、走什么路径"的导航语义。
+    """
+    if explicit_task.strip():
+        return explicit_task.strip()
     if target:
-        template = APP_NAV_TEMPLATES.get(app, APP_NAV_TEMPLATES["generic"])
+        template = APP_NAV_TEMPLATES.get(app) or APP_NAV_TEMPLATES.get(app.lower()) \
+            or APP_NAV_TEMPLATES["generic"]
         return template.format(target=target)
-    return task or f"打开 {app} 并停留在需要采集信息的页面"
+    return f"打开 {app} 并停留在需要采集信息的页面"
 
 
 def resolve_dedup_mode(app: str, choice: str = "auto") -> str:
@@ -167,7 +175,7 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
                 # 导航模型会反复点空（实测一次跑 20 步烧光配额），先回桌面复位
                 adb.home(device_id)
                 time.sleep(1.2)
-            nav_task = build_navigation_task(args.app, args.target, task)
+            nav_task = build_navigation_task(args.app, args.target, args.task)
             print(f"[导航] {nav_task.splitlines()[0]}")
             nav = StepAgent(config, device_id=device_id, verbose=args.verbose).run(nav_task)
             print(f"[导航完成] success={nav.success} reason={nav.reason} "

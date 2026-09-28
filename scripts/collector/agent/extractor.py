@@ -90,7 +90,12 @@ class ExtractAgent:
                     print("[提取] 纯文本修复无效，带图重试…")
                     continue
 
-            data["items"] = [item for item in data.get("items", []) if str(item.get("text", "")).strip()]
+            # 空条目过滤：text 或 title 任一有效即保留——微信消息靠 text，
+            # 小红书/红果等卡片可能只有 title；两者皆空才是提取噪声
+            data["items"] = [
+                item for item in data.get("items", [])
+                if str(item.get("text", "")).strip() or str(item.get("title", "")).strip()
+            ]
             data["message_count"] = len(data["items"])
             data["raw_response"] = raw  # 证据以带图调用的原始输出为准
             if repaired_raw:

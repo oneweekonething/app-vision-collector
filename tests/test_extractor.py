@@ -66,6 +66,19 @@ class ParseJsonTest(unittest.TestCase):
         data = _parse_json(GOOD_JSON)
         self.assertEqual(len(data["items"]), 2)
 
+    def test_title_only_items_survive(self):
+        # 卡片型条目（红果/小红书）可能只有 title 没有 text——必须保留；
+        # 只有 text 和 title 双空的才是提取噪声
+        raw = ('{"items": ['
+               '{"type": "note", "title": "都市重生之最强剑仙", "text": ""},'
+               '{"type": "message", "title": null, "text": "你好"},'
+               '{"type": "noise", "title": "  ", "text": ""}]}')
+        agent, _ = make_agent([f'```json\n{raw}\n```'])
+        out = agent.extract(make_screenshot())
+        self.assertEqual(len(out["items"]), 2)
+        self.assertEqual(out["items"][0]["title"], "都市重生之最强剑仙")
+        self.assertEqual(out["items"][1]["text"], "你好")
+
     def test_fenced_json_with_junk(self):
         raw = f"好的，结果如下：\n```json\n{GOOD_JSON}\n```\n以上。"
         self.assertEqual(len(_parse_json(raw)["items"]), 2)

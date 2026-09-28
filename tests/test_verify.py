@@ -193,6 +193,88 @@ class VerifySessionTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("缺少 navigation 事件" in line for line in report))
 
+    def test_malformed_manifest_line_reports_not_crash(self):
+        """manifest 某行是合法 JSON 但不是对象（如 []）→ 报告问题而非 AttributeError。"""
+        session = build_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        lines.insert(1, "[]")
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("不是 JSON 对象" in line for line in report))
+
+    def test_screenshot_event_missing_path_reports_not_crash(self):
+        session = build_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        fixed = []
+        for ln in manifest.read_text(encoding="utf-8").splitlines():
+            ev = json.loads(ln)
+            if ev.get("event") == "screenshot":
+                del ev["path"]
+            fixed.append(json.dumps(ev, ensure_ascii=False))
+        manifest.write_text("\n".join(fixed) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("缺少 path" in line for line in report))
+
+    def test_items_not_a_list_reports_not_crash(self):
+        session = build_session(Path(self.tmp.name))
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"] = {"broken": True}
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("index.items 不是数组" in line for line in report))
+
+    def test_item_without_evidence_object_reports_not_crash(self):
+        session = build_session(Path(self.tmp.name))
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][0]["evidence"] = "tampered"
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("缺少 evidence 对象" in line for line in report))
+
+    def test_missing_session_finished_is_invalid(self):
+        """index 已写但终态事件缺失（crash window）→ 必须判问题。"""
+        session = build_navigated_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        lines = [ln for ln in manifest.read_text(encoding="utf-8").splitlines()
+                 if '"event": "session_finished"' not in ln]
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("session_finished" in line for line in report))
+
+    def test_finished_not_last_event_is_invalid(self):
+        session = build_navigated_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        lines.append(json.dumps({"ts": "2026-09-28T14:00:00+08:00",
+                                 "event": "items", "screen": 99}, ensure_ascii=False))
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("最后一条台账事件" in line for line in report))
+
+    def test_finished_totals_mismatch_with_index_is_invalid(self):
+        session = build_navigated_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        fixed = []
+        for ln in lines:
+            ev = json.loads(ln)
+            if ev.get("event") == "session_finished":
+                ev["screens"] = 999
+            fixed.append(json.dumps(ev, ensure_ascii=False))
+        manifest.write_text("\n".join(fixed) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("session_finished.screens" in line for line in report))
+
 
 if __name__ == "__main__":
     unittest.main()

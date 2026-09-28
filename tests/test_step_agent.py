@@ -96,8 +96,21 @@ class VerdictParseTest(unittest.TestCase):
         self.assertEqual(_parse_verdict("是\n已进入目标群")[0], True)
         self.assertEqual(_parse_verdict("否\n页面不对")[0], False)
 
+    def test_fail_closed_on_embedded_yes(self):
+        # 全文里搜 YES 的旧逻辑会把这类回答误判为通过——必须 fail-closed
+        for text in (
+            "I cannot say YES because the target is not visible",
+            "The answer is probably NO, but let me say YES anyway",
+            "可能算 yes 吧",
+        ):
+            self.assertIsNone(_parse_verdict(text)[0], text)
+
+    def test_trailing_punctuation_tolerated(self):
+        self.assertEqual(_parse_verdict("YES.")[0], True)
+        self.assertEqual(_parse_verdict("否！")[0], False)
+
     def test_unparseable(self):
-        self.assertIsNone(_parse_verdict("看起来还行") [0])
+        self.assertIsNone(_parse_verdict("看起来还行")[0])
 
     def test_think_block_stripped(self):
         satisfied, _ = _parse_verdict("<think>分析</think>NO\n不对")

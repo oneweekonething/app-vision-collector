@@ -2,15 +2,16 @@
 """session 溯源校验 CLI。
 
 对一次采集会话做离线完整性复核：
-1. manifest.jsonl 台账可解析、结构完整；
+1. manifest.jsonl 台账可解析、每行是含 event 字段的对象（坏行按问题报告）；
 2. 每张台账截图文件存在且 SHA-256 与台账记录一致；
-3. index.json 中每条信息的 evidence 指向存在的截图且哈希匹配；
+3. index.json 合法 JSON、结构正确（items 为对象数组、每条含 evidence 对象），
+   损坏按问题报告而不抛异常——审计工具对任何输入都应给出结论；
 4. 每屏都有对应的 extracted/*.json；
 5. 导航失败不变量：navigation_failed 会话必须 navigation.success=false
    且 0 截图（0 屏是预期结果）；其余会话 0 截图判为问题；
 6. navigation 台账事件与 index.json 顶层 navigation 字段逐字段一致；
-7. index.json 损坏（非法 JSON / 非对象）按问题报告，不抛异常——
-   审计工具对任何输入都应给出结论而不是崩溃。
+7. 会话生命周期：session_started / session_finished 各恰好一条，finished
+   为最后一条事件，且 stop_reason / error / totals 与 index 交叉一致。
 
 用法:
     python3 scripts/inspect_session.py collections/2026-09-27/<session-id> [--quiet]
@@ -57,31 +58,44 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     if problems:
         return False, report
 
-    # 2. 解析台账
+    # 2. 解析台账（每行必须是 JSON 对象；坏行按问题报告并跳过，绝不崩溃）
     events: list[dict] = []
     for line_no, line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
-            events.append(json.loads(line))
+            parsed_line = json.loads(line)
         except json.JSONDecodeError as exc:
             problem(f"manifest.jsonl 第 {line_no} 行不是合法 JSON: {exc}")
+            continue
+        if not isinstance(parsed_line, dict):
+            problem(f"manifest.jsonl 第 {line_no} 行不是 JSON 对象")
+            continue
+        if "event" not in parsed_line:
+            problem(f"manifest.jsonl 第 {line_no} 行缺少 event 字段")
+            continue
+        events.append(parsed_line)
     screenshots = [e for e in events if e.get("event") == "screenshot"]
     item_events = [e for e in events if e.get("event") == "items"]
     info(f"台账事件 {len(events)} 条（截图 {len(screenshots)} 屏 / 条目事件 {len(item_events)} 个）")
 
-    # 3. 截图完整性
+    # 3. 截图完整性（path/screen 字段缺失按问题报告，跳过该事件）
     hash_by_screen: dict[int, dict] = {}
     for event in screenshots:
-        path = session_dir / event["path"]
+        rel = event.get("path")
+        screen = event.get("screen")
+        if not isinstance(rel, str) or not isinstance(screen, int):
+            problem(f"截图台账事件缺少 path 或 screen 字段: {event}")
+            continue
+        path = session_dir / rel
         if not path.exists():
-            problem(f"截图缺失: {event['path']}")
+            problem(f"截图缺失: {rel}")
             continue
         actual = _file_sha256(path)
         if actual != event.get("sha256"):
-            problem(f"截图哈希不一致: {event['path']}（台账 {str(event.get('sha256'))[:12]}… vs 实际 {actual[:12]}…）")
+            problem(f"截图哈希不一致: {rel}（台账 {str(event.get('sha256'))[:12]}… vs 实际 {actual[:12]}…）")
         else:
-            hash_by_screen[event["screen"]] = event
+            hash_by_screen[screen] = event
     info(f"截图完整性: {len(hash_by_screen)}/{len(screenshots)} 通过 SHA-256 校验")
 
     # 4. 解析 index（损坏按问题报告，不让审计工具崩溃）
@@ -96,8 +110,17 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     index = parsed
 
     items = index.get("items", [])
+    if not isinstance(items, list):
+        problem(f"index.items 不是数组（实际 {type(items).__name__}）")
+        items = []
     for item in items:
-        evidence = item.get("evidence", {})
+        if not isinstance(item, dict):
+            problem(f"index.items 中存在非对象条目: {str(item)[:60]}")
+            continue
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict):
+            problem(f"{item.get('item_id', '?')} 缺少 evidence 对象")
+            continue
         rel = evidence.get("screenshot")
         if not rel:
             problem(f"{item.get('item_id')} 缺少 evidence.screenshot")
@@ -115,6 +138,9 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
 
     # 5. totals 一致性
     totals = index.get("totals", {})
+    if not isinstance(totals, dict):
+        problem("index.totals 不是 JSON 对象")
+        totals = {}
     if totals.get("items_unique") != len(items):
         problem(f"index.totals.items_unique={totals.get('items_unique')} 与实际条目数 {len(items)} 不符")
     if totals.get("screens") != len(screenshots):
@@ -152,6 +178,29 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
                         f"（manifest={manifest_value!r} vs index={navigation.get(key)!r}）")
     elif nav_events:
         problem("manifest 有 navigation 事件但 index.json 缺少 navigation 字段")
+
+    # 5.7 会话生命周期不变量：started/finished 各恰好一条，finished 是最后
+    # 一条事件，且 stop_reason/totals 与 index 一致——防止"index 已写出但
+    # 终态事件未落盘"的 crash window 骗过校验。
+    started_events = [e for e in events if e.get("event") == "session_started"]
+    finished_events = [e for e in events if e.get("event") == "session_finished"]
+    if len(started_events) != 1:
+        problem(f"session_started 事件应有恰好 1 条，实际 {len(started_events)} 条")
+    if len(finished_events) != 1:
+        problem(f"session_finished 事件应有恰好 1 条，实际 {len(finished_events)} 条"
+                "（缺失说明会话未正常收尾）")
+    if finished_events:
+        finished = finished_events[0]
+        if events and finished is not events[-1]:
+            problem("session_finished 不是最后一条台账事件（之后仍有事件写入）")
+        for key in ("stop_reason", "error"):
+            if finished.get(key) != index.get(key):
+                problem(f"session_finished.{key} 与 index 不一致"
+                        f"（manifest={finished.get(key)!r} vs index={index.get(key)!r}）")
+        for key in ("screens", "items_extracted", "items_unique", "duplicates", "extract_failures"):
+            if finished.get(key) != totals.get(key):
+                problem(f"session_finished.{key} 与 index.totals 不一致"
+                        f"（manifest={finished.get(key)!r} vs index={totals.get(key)!r}）")
 
     # 6. 每屏提取文件
     missing_extracted = [
