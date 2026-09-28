@@ -25,6 +25,28 @@ SAMPLE_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 """
 
 
+# "icon + 兄弟文字"式按钮：点击落在 icon 上，标签"发送"是同级 text 节点
+SIBLING_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" content-desc="" clickable="false" bounds="[0,0][1080,2400]"/>
+  <node index="1" text="" content-desc="" clickable="true" bounds="[900,2200][1080,2320]">
+    <node index="2" text="" content-desc="发送图标" clickable="false" bounds="[905,2205][950,2315]"/>
+    <node index="3" text="发送" content-desc="" clickable="false" bounds="[955,2205][1075,2315]"/>
+  </node>
+</hierarchy>
+"""
+
+# 整页可点击的大容器：子树里远处的"发送"字样不应算进其他位置的点击目标
+BIG_CONTAINER_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" content-desc="" clickable="true" bounds="[0,0][1080,2400]">
+    <node index="1" text="帮我发送文件" content-desc="" clickable="false" bounds="[40,100][800,220]"/>
+    <node index="2" text="普通卡片" content-desc="" clickable="false" bounds="[40,1500][800,1620]"/>
+  </node>
+</hierarchy>
+"""
+
+
 def completed(stdout: str = "", rc: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(["adb"], rc, stdout=stdout, stderr="")
 
@@ -55,6 +77,23 @@ class TextsAtTest(unittest.TestCase):
               '<node text="y" clickable="true" bounds="[0,0][100,100]"/>'
         texts = uitree.texts_at(xml, 50, 50)
         self.assertEqual(texts, ["y"])
+
+    def test_sibling_text_inside_button_found(self):
+        # 点击落在 icon 上（无文字），按钮标签"发送"是兄弟节点：
+        # 按钮级可点击祖先的子树文本必须被收集（树解析的核心价值）
+        texts = uitree.texts_at(SIBLING_XML, 927, 2260)
+        self.assertIn("发送", texts)
+        self.assertIn("发送图标", texts)  # content-desc 也算
+
+    def test_page_sized_container_does_not_pull_all_texts(self):
+        # 整页可点击的大容器：远处的"发送"字样不算进"普通卡片"处的点击目标
+        texts = uitree.texts_at(BIG_CONTAINER_XML, 400, 1560)
+        self.assertEqual(texts, ["普通卡片"])
+
+    def test_malformed_xml_falls_back_to_regex(self):
+        # 截断的 XML 建不了树 → 回退正则几何包含，仍能给出结果
+        truncated = SAMPLE_XML[:SAMPLE_XML.rfind("</hierarchy>")]
+        self.assertIn("发送", uitree.texts_at(truncated, 990, 2260))
 
 
 class DumpTest(unittest.TestCase):

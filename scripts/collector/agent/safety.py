@@ -15,6 +15,10 @@
 3. 独立核验：uiautomator 控件树给出点击坐标处的真实控件文本
    （见 adb/uitree.py），与模型自报无关，命中关键词即拒绝。
 
+此外 Swipe 被限制为近垂直滚动（ScrollGuard）：横向滑动是常见的写手势
+（列表项左滑删除、滑块确认、通知清除），采集场景的导航与翻页只需要
+上下滚动。
+
 第 3 层是安全域隔离的关键：模型把"发送"按钮谎报成 open_detail 也拦得住。
 控件树不可用时（FLAG_SECURE 等场景 dump 失败）自动退化为第 2 层并记录
 降级。这仍是纵深防御而非形式化验证。
@@ -48,12 +52,19 @@ _COORD_FIELDS = {"Tap": ("element",), "Swipe": ("start", "end")}
 
 VALID_ACTIONS = {"Tap", "Swipe", "Type", "Back", "Home", "Launch", "Wait"}
 
+# Swipe 形状限制（ScrollGuard）：横向滑动是常见的写操作手势
+# （列表项左滑删除/归档、滑块确认、通知清除），只放行近垂直滚动。
+SWIPE_MIN_DY = 100          # 归一化坐标：滚动至少约 10% 屏高
+SWIPE_MAX_DX_RATIO = 0.35   # 横向位移不得超过纵向位移的 35%
+SWIPE_EDGE_MARGIN = 100     # 起点避开左右系统手势区（归一化）
+
 
 @dataclass
 class GuardVerdict:
     """护栏判定结果。
 
-    code: allow | deny_write_action | deny_invalid_coordinates | deny_invalid_action
+    code: allow | deny_write_action | deny_invalid_coordinates |
+          deny_non_scroll_swipe | deny_invalid_action
     detail: 面向模型的人类可读反馈（deny 时注入对话历史）。
     """
 
@@ -87,6 +98,11 @@ class ActionGuard:
         if not verdict.allowed:
             return verdict
 
+        if name == "Swipe":
+            verdict = self._check_swipe_shape(action)
+            if not verdict.allowed:
+                return verdict
+
         verdict = self._check_semantics(name, action)
         if not verdict.allowed:
             return verdict
@@ -111,6 +127,37 @@ class ActionGuard:
                         f"{name} 的 {field}={list(point)} 超出 0-999 归一化范围，"
                         "请重新给出合法坐标。",
                     )
+        return GuardVerdict(True, "allow")
+
+    def _check_swipe_shape(self, action: dict[str, Any]) -> GuardVerdict:
+        """Swipe 只允许近垂直滚动：横向滑动（左滑删除/滑块/切换）是写手势。
+
+        采集场景（微信/小红书/红果）的导航与翻页只需要上下滚动；
+        顺带要求起点避开屏幕左右边缘，防误触系统返回手势。
+        """
+        start, end = action["start"], action["end"]
+        dx = abs(end[0] - start[0])
+        dy = abs(end[1] - start[1])
+
+        if dy < SWIPE_MIN_DY:
+            return GuardVerdict(
+                False, "deny_non_scroll_swipe",
+                f"Swipe 纵向位移过短（dy={dy:.0f}），不构成滚动。"
+                f"滚动请给出至少 {SWIPE_MIN_DY} 的上下位移。",
+            )
+        if dx > dy * SWIPE_MAX_DX_RATIO:
+            return GuardVerdict(
+                False, "deny_non_scroll_swipe",
+                f"Swipe 横向位移过大（dx={dx:.0f}, dy={dy:.0f}），只允许近垂直滚动。"
+                "横向滑动会触发列表项删除/归档、滑块确认等写操作，已被禁止；"
+                "如需浏览请改用纵向滚动或 Tap。",
+            )
+        if not SWIPE_EDGE_MARGIN <= start[0] <= 999 - SWIPE_EDGE_MARGIN:
+            return GuardVerdict(
+                False, "deny_non_scroll_swipe",
+                f"Swipe 起点 x={start[0]:.0f} 位于屏幕左右手势区，"
+                "请从屏幕中部（约 x=500）开始滚动。",
+            )
         return GuardVerdict(True, "allow")
 
     def _check_semantics(self, name: str, action: dict[str, Any]) -> GuardVerdict:

@@ -81,6 +81,29 @@ class ActionGuardTest(unittest.TestCase):
             verdict = self.guard.check(action)
             self.assertTrue(verdict.allowed, action)
 
+    def test_swipe_restricted_to_vertical_scroll(self):
+        def swipe(start, end):
+            return {"kind": "do", "name": "Swipe", "start": start, "end": end,
+                    "intent": "scroll", "target_text": "列表"}
+
+        # 近垂直滚动放行（含轻微倾斜与回滚）
+        for start, end in [
+            ([500, 700], [500, 300]),   # 标准上滑
+            ([480, 300], [520, 700]),   # 下滑 + 轻微倾斜
+        ]:
+            self.assertTrue(self.guard.check(swipe(start, end)).allowed, (start, end))
+
+        # 横滑删除 / 斜滑 / 位移过短 / 边缘手势区 → 拒绝
+        for start, end in [
+            ([100, 500], [900, 500]),   # 纯横向（左滑删除手势）
+            ([500, 700], [700, 300]),   # 对角线 dx=200 > 0.35*dy=140
+            ([500, 500], [500, 560]),   # 纵向位移过短
+            ([50, 700], [50, 300]),     # 起点在左边缘手势区
+        ]:
+            verdict = self.guard.check(swipe(start, end))
+            self.assertFalse(verdict.allowed, (start, end))
+            self.assertEqual(verdict.code, "deny_non_scroll_swipe")
+
     def test_ui_texts_independent_layer(self):
         # 模型自报干净，但控件树显示目标是"发送" → 独立核验层拒绝
         action = {

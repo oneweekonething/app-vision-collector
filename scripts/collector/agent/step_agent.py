@@ -169,28 +169,26 @@ class StepAgent:
         return self._execute_action(action)
 
     def _execute_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """护栏检查（自报语义 + 控件树独立核验）+ 执行动作，返回 {finished, message}。"""
+        """护栏检查（自报语义 + Swipe 形状 + 控件树独立核验）+ 执行动作。
+
+        顺序固定为 校验 → 解引用坐标 → 独立核验 → 执行：缺 element、
+        坐标非法都由护栏以 [GUARD] 反馈给模型重新规划，而不是 KeyError
+        冒泡终止整个会话。
+        """
         if action["kind"] == "finish":
             return {"finished": True, "message": action.get("message", "finished")}
 
         name = str(action.get("name", ""))
-        tap_pixel: tuple[int, int] | None = None
-        if name == "Tap":
-            tap_pixel = _denormalize(action["element"], self.device_id)
 
         verdict = self.guard.check(action)
-        if verdict.allowed and tap_pixel is not None and self.config.nav_ui_verify:
-            verdict = self._verify_tap_target(action, tap_pixel)
+        tap_pixel: tuple[int, int] | None = None
+        if verdict.allowed and name == "Tap":
+            # element 已通过护栏坐标校验，此处解引用是安全的
+            tap_pixel = _denormalize(action["element"], self.device_id)
+            if self.config.nav_ui_verify:
+                verdict = self._verify_tap_target(action, tap_pixel)
         if not verdict.allowed:
-            self._guard_streak += 1
-            self._log(f"[护栏拦截 {self._guard_streak}/{self.config.nav_guard_denials}] "
-                      f"{verdict.code}: {verdict.detail}")
-            self._feedback(f"[GUARD] {verdict.detail}")
-            if self._guard_streak >= self.config.nav_guard_denials:
-                raise _AbortNavigation(
-                    "safety_aborted",
-                    f"连续 {self._guard_streak} 个动作被只读护栏拒绝"
-                    f"（最后原因: {verdict.detail}）")
+            self._guard_denied(verdict)
             return {"finished": False, "message": ""}
         self._guard_streak = 0
 
@@ -224,6 +222,18 @@ class StepAgent:
 
         self._fail_streak = 0
         return {"finished": False, "message": ""}
+
+    def _guard_denied(self, verdict: GuardVerdict) -> None:
+        """登记一次护栏拦截：反馈模型重新规划；连续达阈值终止导航。"""
+        self._guard_streak += 1
+        self._log(f"[护栏拦截 {self._guard_streak}/{self.config.nav_guard_denials}] "
+                  f"{verdict.code}: {verdict.detail}")
+        self._feedback(f"[GUARD] {verdict.detail}")
+        if self._guard_streak >= self.config.nav_guard_denials:
+            raise _AbortNavigation(
+                "safety_aborted",
+                f"连续 {self._guard_streak} 个动作被只读护栏拒绝"
+                f"（最后原因: {verdict.detail}）")
 
     def _verify_tap_target(self, action: dict[str, Any],
                            pixel: tuple[int, int]) -> GuardVerdict:

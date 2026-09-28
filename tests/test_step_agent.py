@@ -262,6 +262,39 @@ class GuardIntegrationTest(unittest.TestCase):
         self.assertEqual(result.reason, "safety_aborted")
         mocks["tap"].assert_not_called()
 
+    def test_tap_without_element_is_guarded_not_crash(self):
+        # 缺 element 的 Tap 必须走护栏 [GUARD] 反馈，而不是 KeyError 冒泡
+        for responses in (
+            ['do(action="Tap", intent="open_detail")'] * 3,                     # DSL
+            ['{"action": "tap", "intent": "open_detail"}'] * 3,                 # JSON
+            ['do(action="Tap", target_text="某条目")'] * 3,                      # 有自报无坐标
+        ):
+            with self.subTest(responses=responses[0]):
+                result, agent, mocks = run_agent(responses)
+                self.assertFalse(result.success)
+                self.assertEqual(result.reason, "safety_aborted")
+                mocks["tap"].assert_not_called()
+                guard_feedback = [m for m in agent.context
+                                  if m["role"] == "user" and "GUARD" in str(m["content"])]
+                self.assertEqual(len(guard_feedback), 3)
+
+    def test_horizontal_swipe_blocked(self):
+        # 左滑删除/切换是写手势：近垂直滚动之外一律拒绝
+        result, _, mocks = run_agent([
+            'do(action="Swipe", start=[100, 500], end=[900, 500], intent="scroll")'
+        ] * 3)
+        self.assertEqual(result.reason, "safety_aborted")
+        mocks["swipe"].assert_not_called()
+
+    def test_vertical_scroll_still_allowed(self):
+        result, _, mocks = run_agent([
+            'do(action="Swipe", start=[500, 700], end=[500, 300], intent="scroll")',
+            "finish(message=\"ok\")",
+            "YES\nok",
+        ])
+        self.assertTrue(result.success)
+        mocks["swipe"].assert_called_once()
+
     def test_ui_tree_catches_mislabeled_send_button(self):
         # 模型谎报：真实是"发送"按钮，自报却是 open_detail/按钮。
         # 控件树独立核验必须拦住——这是安全域隔离的关键场景。

@@ -60,9 +60,15 @@ collect.py
 - 动作携带 intent / target_text 交 ActionGuard 判定；被拦截的动作以
   [GUARD] 消息反馈，模型换只读路径重新规划；
 - Tap 在自报判定通过后，还经 uiautomator 控件树独立核验：取点击
-  坐标处内层节点与可点击祖先的 text/content-desc，命中写操作关键词
-  即拒绝。这一层与模型输出无关，是安全域隔离的关键；dump 不可用时
-  降级为仅自报判定（`AVC_NAV_UI_VERIFY=0` 可关闭）；
+  坐标处内层节点与可点击祖先的 text/content-desc（按钮级祖先含子树
+  全部文本，覆盖"icon + 兄弟文字"式按钮；整页大容器只算自身文本），
+  命中写操作关键词即拒绝。这一层与模型输出无关，是安全域隔离的关键；
+  dump 不可用时降级为仅自报判定（`AVC_NAV_UI_VERIFY=0` 可关闭）；
+- Swipe 被限制为近垂直滚动（ScrollGuard）：纵向位移 ≥ 10% 屏高、
+  横向位移 ≤ 纵向的 35%、起点避开左右手势区——横滑删除/滑块确认等
+  写手势一律拒绝，采集场景的导航翻页只需要上下滚动；
+- 动作校验严格先于坐标解引用：缺 element / 坐标非法由护栏以 [GUARD]
+  反馈重新规划，不会 KeyError 冒泡终止会话；
 - adb 命令失败抛 AdbCommandError，以 [ACTION_FAILED] 观察反馈模型，
   连续失败（默认 3 次）以 device_error / action_failed 终止；
 - 文本输入走 input_text_safe 事务：切换 ADB Keyboard → 输入 →

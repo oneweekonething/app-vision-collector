@@ -67,7 +67,9 @@ def build_nav_system_prompt() -> str:
 - do(action="Launch", app="包名或应用名")                        启动目标 App
 - do(action="Tap", element=[x,y], intent="意图", target_text="元素文字")  点击屏幕位置
 - do(action="Type", text="xxx", intent="意图")                   向已聚焦的输入框输入文本
-- do(action="Swipe", start=[x1,y1], end=[x2,y2], intent="意图")  滑动手势
+- do(action="Swipe", start=[x1,y1], end=[x2,y2], intent="意图")  纵向滚动页面
+  （仅允许近垂直的上下滚动且起点避开屏幕左右边缘；横向滑动会触发删除/切换等
+  写操作，会被拒绝——需要看更多内容请上下滚动）
 - do(action="Back")                                              返回上一页/关闭弹窗
 - do(action="Home")                                              回到桌面
 - do(action="Wait", duration="2 seconds")                        等待页面加载
