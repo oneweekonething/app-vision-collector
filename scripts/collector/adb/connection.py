@@ -47,6 +47,9 @@ KNOWN_APPS = {
     "淘宝": "com.taobao.taobao",
     "weibo": "com.sina.weibo",
     "微博": "com.sina.weibo",
+    "hongguo": "com.phoenix.read",
+    "红果": "com.phoenix.read",
+    "红果免费短剧": "com.phoenix.read",
 }
 
 
