@@ -1,17 +1,16 @@
 """条目去重：跨屏指纹判重。
 
-旧版指纹 = 类型+发送者+标题+正文，全局判重——聊天里同一个人发两次
-"收到"，第二条会被误杀；而翻页保留 60% 重叠，同一条消息最多跨 3 屏
-可见，只有相邻屏的重复才是真正的"同一屏内容重采"。
+去重模式按采集对象的形态选择（SessionStore.create 的 dedup_mode，collect.py
+按 App 自动判定，`--dedup` 可覆盖）：
 
-策略按条目类型区分：
-
-- 聊天类（message/comment/system）：只对最近 N 屏（滑动窗口）判重。
-  指纹额外并入 time_hint（有则必并）：同一消息跨屏时间戳一致，仍会
-  判重；同一个人不同时刻发的相同文字则因时间不同而保留。窗口外的
-  相同内容视为真实重复，保留不误杀。
-- 非聊天类（note/product/search_result 等）：全局判重（卡片有标题，
-  远处重现基本就是重复曝光）。
+- **chat（聊天采集，如微信）**：同一个人隔很久再发相同文字是真实重复，
+  必须保留。聊天类条目（message/comment/system）只对最近 N 屏（滑动窗口）
+  判重——窗口内的重复是 60% 重叠造成的重采，窗口外的相同内容视为真实
+  重复保留；指纹并入 time_hint（有则必并），不同时刻的相同文本不误杀。
+  非聊天类条目（卡片有标题）仍全局判重。
+- **global（信息流采集，如红果免费短剧/小红书）**：同内容远距重现就是
+  重复曝光（榜单回看、推荐流重推、翻页回弹），不存在"真实重复"的语义。
+  全部条目按内容全局判重，且指纹不并入 time_hint（时间抖动不应放过重复）。
 
 同屏内的完全相同指纹总是判重（提取器重复输出）。
 
@@ -28,6 +27,9 @@ from typing import Any
 
 CHAT_LIKE_TYPES = {"message", "comment", "system"}
 
+MODE_CHAT = "chat"
+MODE_GLOBAL = "global"
+
 
 def _normalize(text: Any) -> str:
     return " ".join(str(text or "").split()).lower()
@@ -37,32 +39,42 @@ def _normalize_time(text: Any) -> str:
     return "".join(str(text or "").split()).lower()
 
 
-def fingerprint(item: dict[str, Any]) -> str:
-    """条目指纹：内容键；聊天类带 time_hint 时并入时间。"""
+def content_fingerprint(item: dict[str, Any]) -> str:
+    """内容指纹：类型+发送者+标题+正文，不含时间。"""
     key = "|".join([
         str(item.get("type", "")),
         _normalize(item.get("sender")),
         _normalize(item.get("title")),
         _normalize(item.get("text")),
     ])
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def fingerprint(item: dict[str, Any]) -> str:
+    """chat 模式指纹：内容指纹；聊天类条目带 time_hint 时并入时间。"""
+    key = content_fingerprint(item)
     if item.get("type") in CHAT_LIKE_TYPES and item.get("time_hint"):
         key += "|t=" + _normalize_time(item["time_hint"])
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
 class Deduplicator:
-    """跨屏去重器：聊天类滑窗判重，非聊天类全局判重。"""
+    """跨屏去重器：chat 模式聊天类滑窗判重，global 模式全部全局判重。"""
 
-    def __init__(self, window: int = 5):
+    def __init__(self, window: int = 5, mode: str = MODE_CHAT):
+        if mode not in (MODE_CHAT, MODE_GLOBAL):
+            raise ValueError(f"未知去重模式: {mode}（可选 {MODE_CHAT}/{MODE_GLOBAL}）")
         # 普通内容最多跨 3 屏；长内容（长消息/大卡片）可达 4~5 屏，取 5 留余量
         self.window = max(1, window)
-        self._global: set[str] = set()          # 全部已收录指纹（非聊天类判重用）
-        self._screen_sets: dict[int, set[str]] = {}  # 各屏收录的指纹
+        self.mode = mode
+        self._global: set[str] = set()          # 全部已收录指纹（非聊天类/global 判重用）
+        self._screen_sets: dict[int, set[str]] = {}   # 各屏收录的指纹
         self._screen_order: list[int] = []      # 屏幕收录顺序（滑动窗口）
 
     def admit(self, screen: int, item: dict[str, Any]) -> bool:
         """判定条目是否收录（True=新条目，False=重复）。"""
-        fp = fingerprint(item)
+        chat_like = self.mode == MODE_CHAT and item.get("type") in CHAT_LIKE_TYPES
+        fp = fingerprint(item) if chat_like else content_fingerprint(item)
 
         current = self._screen_sets.setdefault(screen, set())
         if screen not in self._screen_order:
@@ -70,7 +82,6 @@ class Deduplicator:
         if fp in current:
             return False  # 同屏完全相同 → 提取重复
 
-        chat_like = item.get("type") in CHAT_LIKE_TYPES
         if chat_like:
             recent = self._screen_order[-(self.window + 1):-1]  # 不含当前屏
             if any(fp in self._screen_sets.get(s, set()) for s in recent):

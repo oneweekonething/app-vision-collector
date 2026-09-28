@@ -44,6 +44,10 @@ powered by a vision language model.
   所有落盘走 tmp + fsync + 原子 rename，manifest 逐条 fsync，进程中断不留半个文件。
 - 🔁 **智能停止**：内容零新增 + 画面位移消失（感知哈希）双重判据 + 宽限屏数
   + 最大屏数上限——长图 / 大卡片跨屏不再被误判为"已到边界"。
+- 🧹 **按 App 形态去重**：微信聊天用滑窗去重（同文本出窗后视为真实重复，
+  不误杀"张三：收到"×2）；红果免费短剧 / 小红书等信息流用全局去重
+  （同内容远距重现即重复曝光）。`--dedup auto` 按 App 自动判定，可显式
+  指定 `chat` / `global`。
 - 🌐 **任意 OpenAI 兼容视觉模型**：提取与导航模型均可通过环境变量配置，
   填入任意支持视觉的模型即可。
 
@@ -179,6 +183,10 @@ python3 scripts/collect.py --app wechat --target "AI 交流群" \
 # 小红书搜索
 python3 scripts/collect.py --app xiaohongshu --target "手机摄影技巧" \
   --task "浏览搜索结果并采集笔记标题、作者、摘要" --max-screens 10
+
+# 红果免费短剧等信息流 App：全局内容去重（auto 即可自动判定）
+python3 scripts/collect.py --app 红果免费短剧 --no-navigate \
+  --task "采集当前榜单的短剧标题与作者" --max-screens 10
 
 # 通用：手机手动停到目标页面，只做"截图+提取"
 python3 scripts/collect.py --app generic --no-navigate \

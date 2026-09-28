@@ -158,6 +158,31 @@ class SessionStoreTest(unittest.TestCase):
         stats2 = self.store.save_extraction(2, r2, {"items": [second]})
         self.assertEqual((stats1["new"], stats2["new"]), (1, 1))
 
+    def test_global_dedup_mode_for_feed_apps(self):
+        # 信息流 App（红果等）：create 指定 global 后，聊天类条目也全局判重
+        store = SessionStore.create(
+            data_dir=self.data_dir, app="红果免费短剧", target="短剧榜",
+            task="采集榜单", device_id="TEST123",
+            vlm_model="test-vlm", nav_model="test-nav", dedup_mode="global",
+        )
+        meta = json.loads((store.session_dir / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["dedup_mode"], "global")
+
+        repeat = {"type": "message", "sender": "观众甲", "text": "好看",
+                  "time_hint": None, "title": None, "extra": {}}
+        for screen in (1, 2, 15):
+            record = store.save_screenshot(make_screenshot())
+            stats = store.save_extraction(screen, record, {"items": [dict(repeat)]})
+            self.assertEqual(stats["new"], 1 if screen == 1 else 0, screen)
+        index = json.loads(store.finalize("completed").read_text(encoding="utf-8"))
+        self.assertEqual(index["dedup_mode"], "global")
+        self.assertEqual(len(index["items"]), 1)
+
+    def test_default_session_records_chat_dedup_mode(self):
+        meta = json.loads(
+            (self.store.session_dir / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["dedup_mode"], "chat")
+
     def test_record_navigation_into_manifest_and_index(self):
         self.store.record_navigation(True, "finished", "已进入群聊", steps=4,
                                      current_app="com.tencent.mm/.ui.LauncherUI")

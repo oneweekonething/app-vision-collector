@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from collector import adb
 from collector.agent import ExtractAgent, StepAgent
 from collector.agent.prompts import APP_NAV_TEMPLATES
-from collector.config import CollectorConfig
+from collector.config import CHAT_DEDUP_APPS, CollectorConfig
 from collector.imaging import average_hash, hamming_distance
 from collector.store import SessionStore
 
@@ -62,6 +62,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="导航前不按 Home 复位（默认复位，避免分屏/深层页面导致坐标错乱）")
     parser.add_argument("--no-scroll", action="store_true",
                         help="只采集当前一屏，不翻页")
+    parser.add_argument("--dedup", choices=["auto", "chat", "global"], default="auto",
+                        help="去重策略：chat=聊天类滑窗去重（同文本远距重现视为真实重复，"
+                             "适用于微信聊天）；global=全部内容全局去重（同内容远距重现即"
+                             "重复曝光，适用于红果/小红书等信息流）。auto 按 --app 判定")
     parser.add_argument("--check", action="store_true", help="只做环境自检，不采集")
     parser.add_argument("--verbose", action="store_true", help="输出详细日志")
     return parser
@@ -110,6 +114,13 @@ def build_navigation_task(app: str, target: str, task: str) -> str:
     return task or f"打开 {app} 并停留在需要采集信息的页面"
 
 
+def resolve_dedup_mode(app: str, choice: str = "auto") -> str:
+    """把 --dedup 选项解析为实际去重模式（auto 按 App 形态判定）。"""
+    if choice != "auto":
+        return choice
+    return "chat" if app.lower() in CHAT_DEDUP_APPS else "global"
+
+
 def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
     """主采集流程：导航 → （截屏 → 提取 → 去重）循环 → 收尾。"""
     device_id = adb.ensure_device(args.device_id)
@@ -127,6 +138,11 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
         else f"采集 {args.app} 当前页面上的信息"
     )
 
+    dedup_mode = resolve_dedup_mode(args.app, args.dedup)
+    print(f"[去重] 模式: {dedup_mode}"
+          + ("（聊天滑窗：同文本出窗后视为真实重复）" if dedup_mode == "chat"
+             else "（全局判重：同内容远距重现视为重复曝光）"))
+
     store = SessionStore.create(
         data_dir=config.data_dir,
         app=args.app,
@@ -135,6 +151,7 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
         device_id=device_id,
         vlm_model=config.vlm_model,
         nav_model=config.nav_model,
+        dedup_mode=dedup_mode,
     )
     print(f"[会话] {store.session_dir}")
 

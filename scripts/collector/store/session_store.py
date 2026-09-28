@@ -73,11 +73,16 @@ class SessionStore:
         device_id: str,
         vlm_model: str,
         nav_model: str,
+        dedup_mode: str = "chat",
     ) -> SessionStore:
         """创建新会话目录并写入元数据与首条台账事件。
 
         目录名带微秒 + 随机后缀并以 exist_ok=False 创建：同一秒并行启动、
         或失败后立刻重跑，都不会落进同一个目录破坏证据链。
+
+        dedup_mode 见 store/dedup.py：chat=聊天滑窗去重（微信等），
+        global=信息流全局去重（红果免费短剧/小红书等）。记入会话元数据，
+        会话间不可变——同一目录内不切换策略。
         """
         started = datetime.now()
         session_id = f"{started.strftime('%Y%m%d-%H%M%S-%f')}-{uuid.uuid4().hex[:8]}"
@@ -88,6 +93,7 @@ class SessionStore:
         (session_dir / "extracted").mkdir(exist_ok=True)
 
         store = cls(session_dir)
+        store.dedup = Deduplicator(mode=dedup_mode)
         metadata = {
             "session_id": f"{session_id}_{app}_{slug}",
             "collector_version": __version__,
@@ -98,6 +104,7 @@ class SessionStore:
             "device_id": device_id,
             "vlm_model": vlm_model,
             "nav_model": nav_model,
+            "dedup_mode": dedup_mode,
             "started_at": started.astimezone().isoformat(timespec="seconds"),
         }
         store._session_metadata = metadata

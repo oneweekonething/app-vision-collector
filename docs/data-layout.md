@@ -29,6 +29,7 @@
 | `device_id` | adb 设备标识 |
 | `vlm_model` / `nav_model` | 提取与导航所用模型 |
 | `started_at` | 开始时间（ISO8601 含时区） |
+| `dedup_mode` | 去重策略：`chat`（聊天滑窗，同文本出窗后视为真实重复）/ `global`（信息流全局判重，同内容远距重现视为重复曝光）；会话内不可变 |
 
 ## screenshots/ —— 证据本体
 

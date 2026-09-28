@@ -76,6 +76,38 @@ class DeduplicatorWindowTest(unittest.TestCase):
         self.assertFalse(self.dedup.admit(3, dict(item)))  # 屏 2 失败被跳过
 
 
+class GlobalModeTest(unittest.TestCase):
+    """信息流模式（红果免费短剧等）：同内容远距重现=重复曝光，全局判重。"""
+
+    def setUp(self):
+        self.dedup = Deduplicator(mode="global")
+
+    def test_chat_like_repeat_beyond_window_still_duplicate(self):
+        # 同一条"弹幕/评论"翻很久后再次出现 → 重复曝光，不重复入库
+        item = message()
+        self.assertTrue(self.dedup.admit(1, item))
+        for screen in (2, 6, 10, 20):
+            self.assertFalse(self.dedup.admit(screen, dict(item)), screen)
+
+    def test_time_hint_does_not_rescue_repeats(self):
+        # global 模式指纹不含时间：时间抖动（OCR 不稳定）不应放过重复
+        self.assertTrue(self.dedup.admit(1, message(time="2026年09月27日 19:00")))
+        self.assertFalse(self.dedup.admit(2, message(time="2026年09月27日 19:05")))
+
+    def test_invalid_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            Deduplicator(mode="fuzzy")
+
+
+class ChatModeDefaultTest(unittest.TestCase):
+    def test_default_mode_is_chat(self):
+        # 不传 mode 时保持聊天滑窗语义（微信场景），既有行为不变
+        dedup = Deduplicator()
+        item = message()
+        self.assertTrue(dedup.admit(1, item))
+        self.assertFalse(dedup.admit(2, dict(item)))
+
+
 def png_bytes(upper: int, lower: int) -> bytes:
     from PIL import Image
 

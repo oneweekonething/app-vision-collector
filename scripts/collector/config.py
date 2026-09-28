@@ -10,6 +10,11 @@ DEFAULT_API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_VLM_MODEL = "qwen3-vl-plus"
 DEFAULT_NAV_MODEL = "autoglm-phone"
 
+# 聊天形态采集的 App：同文本远距重现=真实重复 → 去重用 chat 滑窗模式；
+# 其余 App（红果免费短剧/小红书等信息流）同内容远距重现=重复曝光 → global 模式。
+# collect.py 的 --dedup auto 按此表判定，--dedup chat/global 可显式覆盖。
+CHAT_DEDUP_APPS = {"wechat", "微信"}
+
 
 @dataclass
 class CollectorConfig:
