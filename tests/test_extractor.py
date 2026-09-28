@@ -87,6 +87,15 @@ class ParseJsonTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _parse_json('{"screen_summary": "no items here"}')
 
+    def test_items_as_object_raises(self):
+        # 合法 JSON 但 items 是对象 → 必须 ValueError 进修复链，而非下游崩溃
+        with self.assertRaises(ValueError):
+            _parse_json('{"items": {"title": "某短剧"}}')
+
+    def test_items_with_non_dict_entries_raises(self):
+        with self.assertRaises(ValueError):
+            _parse_json('{"items": ["title", 42]}')
+
     def test_no_braces_raises(self):
         with self.assertRaises(ValueError):
             _parse_json("这不是 JSON")
@@ -111,6 +120,17 @@ class ExtractTest(unittest.TestCase):
         # 第 1 次带图 + 第 2 次纯文本修复（不再发图）
         self.assertEqual(len(fake.calls), 2)
         self.assertTrue(is_image_call(fake.calls[0]))
+        self.assertFalse(is_image_call(fake.calls[1]))
+
+    def test_bad_items_shape_enters_repair_chain(self):
+        # items 是对象（合法 JSON、错误 shape）→ ValueError → 纯文本修复，
+        # 不允许直接变成整屏 extraction failure
+        bad_shape = '{"items": {"title": "某短剧"}}'
+        agent, fake = make_agent([bad_shape, GOOD_JSON])
+        data = agent.extract(make_screenshot())
+        self.assertEqual(data["message_count"], 1)
+        self.assertEqual(data["repair_response"], GOOD_JSON)
+        self.assertEqual(len(fake.calls), 2)
         self.assertFalse(is_image_call(fake.calls[1]))
 
     def test_repair_failure_falls_back_to_image_retry(self):

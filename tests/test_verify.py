@@ -216,7 +216,7 @@ class VerifySessionTest(unittest.TestCase):
         manifest.write_text("\n".join(fixed) + "\n", encoding="utf-8")
         ok, report = verify_session(session)
         self.assertFalse(ok)
-        self.assertTrue(any("缺少 path" in line for line in report))
+        self.assertTrue(any("path/screen" in line for line in report))
 
     def test_items_not_a_list_reports_not_crash(self):
         session = build_session(Path(self.tmp.name))
@@ -274,6 +274,66 @@ class VerifySessionTest(unittest.TestCase):
         ok, report = verify_session(session)
         self.assertFalse(ok)
         self.assertTrue(any("session_finished.screens" in line for line in report))
+
+    # ---- 以下为"坏数据永不崩溃"回归：篡改后只允许 ✗ 报告，不允许异常 ----
+
+    def _tampered_ok(self, session: Path) -> tuple[bool, list[str]]:
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        return ok, report
+
+    def test_navigation_as_string_reports_not_crash(self):
+        session = build_navigated_session(Path(self.tmp.name))
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["navigation"] = "broken"
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        _, report = self._tampered_ok(session)
+        self.assertTrue(any("index.navigation 不是 JSON 对象" in line for line in report))
+
+    def test_navigation_as_list_reports_not_crash(self):
+        session = build_navigated_session(Path(self.tmp.name))
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["navigation"] = []
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        _, report = self._tampered_ok(session)
+        self.assertTrue(any("index.navigation 不是 JSON 对象" in line for line in report))
+
+    def test_screenshot_event_missing_screen_reports_not_crash(self):
+        session = build_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        fixed = []
+        for ln in manifest.read_text(encoding="utf-8").splitlines():
+            ev = json.loads(ln)
+            if ev.get("event") == "screenshot":
+                del ev["screen"]
+            fixed.append(json.dumps(ev, ensure_ascii=False))
+        manifest.write_text("\n".join(fixed) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("path/screen" in line for line in report))
+
+    def test_evidence_screenshot_wrong_types_report_not_crash(self):
+        for bad in ({}, 123, [1, 2]):
+            with self.subTest(bad=bad):
+                session = build_session(Path(self.tmp.name))
+                index_path = session / "index.json"
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+                index["items"][0]["evidence"]["screenshot"] = bad
+                index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+                _, report = self._tampered_ok(session)
+                self.assertTrue(any("类型非法" in line or "缺少 evidence.screenshot" in line
+                                    for line in report))
+
+    def test_screenshot_path_pointing_to_directory_reports_not_crash(self):
+        session = build_session(Path(self.tmp.name))
+        target = session / "screenshots" / "screen-0001.png"
+        target.unlink()
+        target.mkdir()  # 同名目录替代文件
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("不是文件" in line for line in report))
 
 
 if __name__ == "__main__":

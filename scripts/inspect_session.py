@@ -79,24 +79,27 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     item_events = [e for e in events if e.get("event") == "items"]
     info(f"台账事件 {len(events)} 条（截图 {len(screenshots)} 屏 / 条目事件 {len(item_events)} 个）")
 
-    # 3. 截图完整性（path/screen 字段缺失按问题报告，跳过该事件）
+    # 3. 截图完整性（只有通过 shape 校验的事件进入 valid_screenshots，
+    #    后续所有逻辑只使用已验证数据，避免坏字段在下游崩溃）
+    valid_screenshots: list[dict] = []
     hash_by_screen: dict[int, dict] = {}
     for event in screenshots:
         rel = event.get("path")
         screen = event.get("screen")
-        if not isinstance(rel, str) or not isinstance(screen, int):
-            problem(f"截图台账事件缺少 path 或 screen 字段: {event}")
+        if not isinstance(rel, str) or not rel or not isinstance(screen, int):
+            problem(f"截图台账事件缺少合法的 path/screen 字段: {event}")
             continue
         path = session_dir / rel
-        if not path.exists():
-            problem(f"截图缺失: {rel}")
+        if not path.is_file():
+            problem(f"截图缺失或不是文件: {rel}")
             continue
         actual = _file_sha256(path)
         if actual != event.get("sha256"):
             problem(f"截图哈希不一致: {rel}（台账 {str(event.get('sha256'))[:12]}… vs 实际 {actual[:12]}…）")
         else:
             hash_by_screen[screen] = event
-    info(f"截图完整性: {len(hash_by_screen)}/{len(screenshots)} 通过 SHA-256 校验")
+        valid_screenshots.append(event)
+    info(f"截图完整性: {len(hash_by_screen)}/{len(valid_screenshots)} 通过 SHA-256 校验")
 
     # 4. 解析 index（损坏按问题报告，不让审计工具崩溃）
     try:
@@ -122,12 +125,12 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
             problem(f"{item.get('item_id', '?')} 缺少 evidence 对象")
             continue
         rel = evidence.get("screenshot")
-        if not rel:
-            problem(f"{item.get('item_id')} 缺少 evidence.screenshot")
+        if not isinstance(rel, str) or not rel:
+            problem(f"{item.get('item_id')} 缺少 evidence.screenshot 或类型非法")
             continue
         path = session_dir / rel
-        if not path.exists():
-            problem(f"{item.get('item_id')} 指向的截图不存在: {rel}")
+        if not path.is_file():
+            problem(f"{item.get('item_id')} 指向的截图不存在或不是文件: {rel}")
             continue
         actual = _file_sha256(path)
         if evidence.get("sha256") and actual != evidence["sha256"]:
@@ -143,8 +146,8 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
         totals = {}
     if totals.get("items_unique") != len(items):
         problem(f"index.totals.items_unique={totals.get('items_unique')} 与实际条目数 {len(items)} 不符")
-    if totals.get("screens") != len(screenshots):
-        problem(f"index.totals.screens={totals.get('screens')} 与台账截图数 {len(screenshots)} 不符")
+    if totals.get("screens") != len(valid_screenshots):
+        problem(f"index.totals.screens={totals.get('screens')} 与台账截图数 {len(valid_screenshots)} 不符")
 
     # 5.5 空会话与导航失败不变量：
     # 导航成功 → 允许（且通常应有）截图；
@@ -152,14 +155,19 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     #   → 截图必须为 0（导航失败即不采集，0 屏是预期结果而非损坏）；
     # 除此之外的 0 屏会话仍判问题——采集根本没开始，vacuous 通过会掩盖问题。
     stop_reason = index.get("stop_reason")
-    navigation = index.get("navigation") or {}
+    navigation = index.get("navigation")
+    if navigation is None:
+        navigation = {}
+    elif not isinstance(navigation, dict):
+        problem(f"index.navigation 不是 JSON 对象（实际 {type(navigation).__name__}）")
+        navigation = {}
 
     if stop_reason == "navigation_failed":
         if navigation.get("success") is not False:
             problem("stop_reason=navigation_failed 但 navigation.success 不是 false，台账不一致")
-        if screenshots:
-            problem(f"navigation_failed 会话不应产生采集截图（发现 {len(screenshots)} 张）")
-    elif not screenshots:
+        if valid_screenshots:
+            problem(f"navigation_failed 会话不应产生采集截图（发现 {len(valid_screenshots)} 张）")
+    elif not valid_screenshots:
         problem(f"会话没有任何截图（stop_reason={stop_reason}），疑似运行中断")
 
     # 5.6 navigation 台账事件与 index 顶层字段逐项一致（跨文件不变量）
@@ -202,10 +210,10 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
                 problem(f"session_finished.{key} 与 index.totals 不一致"
                         f"（manifest={finished.get(key)!r} vs index={totals.get(key)!r}）")
 
-    # 6. 每屏提取文件
+    # 6. 每屏提取文件（只使用通过 shape 校验的截图事件）
     missing_extracted = [
-        s["screen"] for s in screenshots
-        if not (session_dir / "extracted" / f"screen-{s['screen']:04d}.json").exists()
+        s["screen"] for s in valid_screenshots
+        if not (session_dir / "extracted" / f"screen-{s['screen']:04d}.json").is_file()
     ]
     if missing_extracted:
         problem(f"缺少提取结果文件的屏: {missing_extracted}")

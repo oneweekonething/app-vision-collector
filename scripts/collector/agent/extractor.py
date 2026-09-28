@@ -123,7 +123,12 @@ class ExtractAgent:
 
 
 def _parse_json(text: str) -> dict[str, Any]:
-    """解析模型输出；容忍 ```json 代码围栏、前后杂质与字符串内换行符。"""
+    """解析模型输出；容忍 ```json 代码围栏、前后杂质与字符串内换行符。
+
+    除解析外同时校验 items 的 schema（必须是对象数组、每项是对象）——
+    合法 JSON 但错误 shape 的输出在这里抛 ValueError，从而进入
+    纯文本修复 → 带图重试的现有容错链，而不是在下游过滤时崩溃。
+    """
     text = text.strip()
 
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
@@ -137,6 +142,11 @@ def _parse_json(text: str) -> dict[str, Any]:
 
     # strict=False：容忍模型在字符串值里输出原始换行/制表符（常见缺陷）
     data = json.loads(text[start : end + 1], strict=False)
-    if not isinstance(data, dict) or "items" not in data:
-        raise ValueError("JSON 缺少 items 字段")
+    if not isinstance(data, dict):
+        raise ValueError("JSON 顶层不是对象")
+    items = data.get("items")
+    if not isinstance(items, list):
+        raise ValueError(f"items 必须是数组（实际 {type(items).__name__}）")
+    if not all(isinstance(item, dict) for item in items):
+        raise ValueError("items 中每一项必须是 JSON 对象")
     return data
