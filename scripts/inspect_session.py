@@ -5,7 +5,9 @@
 1. manifest.jsonl 台账可解析、结构完整；
 2. 每张台账截图文件存在且 SHA-256 与台账记录一致；
 3. index.json 中每条信息的 evidence 指向存在的截图且哈希匹配；
-4. 每屏都有对应的 extracted/*.json。
+4. 每屏都有对应的 extracted/*.json；
+5. 导航失败不变量：navigation_failed 会话必须 navigation.success=false
+   且 0 截图（0 屏是预期结果）；其余会话 0 截图判为问题。
 
 用法:
     python3 scripts/inspect_session.py collections/2026-09-27/<session-id> [--quiet]
@@ -100,10 +102,21 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     if totals.get("screens") != len(screenshots):
         problem(f"index.totals.screens={totals.get('screens')} 与台账截图数 {len(screenshots)} 不符")
 
-    # 5.5 空会话告警：证据先行原则下任何会话至少应有 1 张截图；
-    # 0 屏说明采集根本没开始（导航失败/配额中断），vacuous 通过会掩盖问题
-    if not screenshots:
-        problem(f"会话没有任何截图（stop_reason={index.get('stop_reason')}），疑似导航失败或运行中断")
+    # 5.5 空会话与导航失败不变量：
+    # 导航成功 → 允许（且通常应有）截图；
+    # 导航失败（stop_reason=navigation_failed 且 navigation.success=false）
+    #   → 截图必须为 0（导航失败即不采集，0 屏是预期结果而非损坏）；
+    # 除此之外的 0 屏会话仍判问题——采集根本没开始，vacuous 通过会掩盖问题。
+    stop_reason = index.get("stop_reason")
+    navigation = index.get("navigation") or {}
+
+    if stop_reason == "navigation_failed":
+        if navigation.get("success") is not False:
+            problem("stop_reason=navigation_failed 但 navigation.success 不是 false，台账不一致")
+        if screenshots:
+            problem(f"navigation_failed 会话不应产生采集截图（发现 {len(screenshots)} 张）")
+    elif not screenshots:
+        problem(f"会话没有任何截图（stop_reason={stop_reason}），疑似运行中断")
 
     # 6. 每屏提取文件
     missing_extracted = [

@@ -19,6 +19,8 @@
 5. **失败即停**：导航返回结构化 NavigationResult（成功 / 失败原因 /
    步数 / 当前 App），finish 后由模型核验"当前页是否满足目标"；导航
    失败立即终止会话，不把错误页面的数据当成合法证据入库。
+   `inspect_session.py` 校验该不变量：navigation_failed 会话必须
+   `navigation.success=false` 且 0 截图（0 屏是预期结果而非损坏）。
 
 ## 模块与数据流
 
