@@ -7,7 +7,10 @@
 3. index.json 中每条信息的 evidence 指向存在的截图且哈希匹配；
 4. 每屏都有对应的 extracted/*.json；
 5. 导航失败不变量：navigation_failed 会话必须 navigation.success=false
-   且 0 截图（0 屏是预期结果）；其余会话 0 截图判为问题。
+   且 0 截图（0 屏是预期结果）；其余会话 0 截图判为问题；
+6. navigation 台账事件与 index.json 顶层 navigation 字段逐字段一致；
+7. index.json 损坏（非法 JSON / 非对象）按问题报告，不抛异常——
+   审计工具对任何输入都应给出结论而不是崩溃。
 
 用法:
     python3 scripts/inspect_session.py collections/2026-09-27/<session-id> [--quiet]
@@ -38,6 +41,12 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
 
     def info(message: str) -> None:
         report.append(f"  · {message}")
+
+    def conclude() -> tuple[bool, list[str]]:
+        ok = problems == 0
+        report.insert(0, f"session: {session_dir}")
+        report.insert(1, f"结果: {'✓ 校验通过' if ok else f'✗ 发现 {problems} 个问题'}")
+        return ok, report
 
     # 1. 基础文件
     manifest_path = session_dir / "manifest.jsonl"
@@ -75,8 +84,17 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
             hash_by_screen[event["screen"]] = event
     info(f"截图完整性: {len(hash_by_screen)}/{len(screenshots)} 通过 SHA-256 校验")
 
-    # 4. index 条目的 evidence 指向
-    index = json.loads(index_path.read_text(encoding="utf-8"))
+    # 4. 解析 index（损坏按问题报告，不让审计工具崩溃）
+    try:
+        parsed = json.loads(index_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        problem(f"index.json 不是合法 JSON: {exc}")
+        return conclude()
+    if not isinstance(parsed, dict):
+        problem("index.json 顶层不是 JSON 对象")
+        return conclude()
+    index = parsed
+
     items = index.get("items", [])
     for item in items:
         evidence = item.get("evidence", {})
@@ -118,6 +136,23 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     elif not screenshots:
         problem(f"会话没有任何截图（stop_reason={stop_reason}），疑似运行中断")
 
+    # 5.6 navigation 台账事件与 index 顶层字段逐项一致（跨文件不变量）
+    nav_events = [e for e in events if e.get("event") == "navigation"]
+    if len(nav_events) > 1:
+        problem(f"manifest 中有多条 navigation 事件（{len(nav_events)} 条）")
+    if navigation:
+        if not nav_events:
+            problem("index.json 有 navigation 字段但 manifest 缺少 navigation 事件")
+        else:
+            for key in ("success", "reason", "message", "steps", "current_app"):
+                manifest_value = nav_events[0].get(key)
+                if navigation.get(key) != manifest_value:
+                    problem(
+                        f"navigation.{key} 台账与 index 不一致"
+                        f"（manifest={manifest_value!r} vs index={navigation.get(key)!r}）")
+    elif nav_events:
+        problem("manifest 有 navigation 事件但 index.json 缺少 navigation 字段")
+
     # 6. 每屏提取文件
     missing_extracted = [
         s["screen"] for s in screenshots
@@ -126,10 +161,7 @@ def verify_session(session_dir: Path) -> tuple[bool, list[str]]:
     if missing_extracted:
         problem(f"缺少提取结果文件的屏: {missing_extracted}")
 
-    ok = problems == 0
-    report.insert(0, f"session: {session_dir}")
-    report.insert(1, f"结果: {'✓ 校验通过' if ok else f'✗ 发现 {problems} 个问题'}")
-    return ok, report
+    return conclude()
 
 
 def main() -> int:

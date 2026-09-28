@@ -69,6 +69,25 @@ def build_navigation_failed_session(root: Path, with_screens: bool = False,
     return store.session_dir
 
 
+def build_navigated_session(root: Path) -> Path:
+    """正常完成且带导航记录的会话（用于台账/index 交叉一致性测试）。"""
+    store = SessionStore.create(
+        data_dir=root, app="wechat", target="navok", task="导航成功会话",
+        device_id="TEST", vlm_model="test-vlm", nav_model="test-nav",
+    )
+    store.record_navigation(True, "finished", "已进入群聊；目标页核验通过",
+                            steps=3, current_app="com.tencent.mm/.ui.LauncherUI")
+    screenshot = Screenshot(
+        png_bytes=FAKE_PNG, width=100, height=200,
+        captured_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        sha256="pending",
+    )
+    record = store.save_screenshot(screenshot)
+    store.save_extraction(1, record, {"items": [ITEM]})
+    store.finalize("no_new_items")
+    return store.session_dir
+
+
 class VerifySessionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -133,6 +152,46 @@ class VerifySessionTest(unittest.TestCase):
         ok, report = verify_session(session)
         self.assertFalse(ok)
         self.assertTrue(any("success 不是 false" in line for line in report))
+
+    def test_corrupt_index_json_reports_problem_not_crash(self):
+        """index.json 损坏 → 正常给出 ✗ 报告，而不是抛异常。"""
+        session = build_session(Path(self.tmp.name))
+        (session / "index.json").write_text('{"items": [ 余额损坏', encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("不是合法 JSON" in line for line in report))
+
+    def test_non_object_index_reports_problem(self):
+        session = build_session(Path(self.tmp.name))
+        (session / "index.json").write_text("[]", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("顶层不是 JSON 对象" in line for line in report))
+
+    def test_navigation_fields_cross_checked_with_manifest(self):
+        """manifest navigation 事件与 index.navigation 逐字段一致（跨文件不变量）。"""
+        session = build_navigated_session(Path(self.tmp.name))
+        ok, report = verify_session(session)
+        self.assertTrue(ok, "\n".join(report))  # 一致时通过
+
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["navigation"]["steps"] = 99  # 只改 index，台账仍是 3
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("navigation.steps" in line and "不一致" in line
+                            for line in report))
+
+    def test_navigation_in_index_without_manifest_event_is_invalid(self):
+        session = build_navigated_session(Path(self.tmp.name))
+        manifest = session / "manifest.jsonl"
+        lines = [ln for ln in manifest.read_text(encoding="utf-8").splitlines()
+                 if '"event": "navigation"' not in ln]
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("缺少 navigation 事件" in line for line in report))
 
 
 if __name__ == "__main__":
