@@ -4,7 +4,7 @@
 按 App 自动判定，`--dedup` 可覆盖）：
 
 - **chat（聊天采集，如微信）**：同一个人隔很久再发相同文字是真实重复，
-  必须保留。聊天类条目（message/comment/system）只对最近 N 屏（滑动窗口）
+  必须保留。聊天类条目（词表见 CHAT_LIKE_TYPES）只对最近 N 屏（滑动窗口）
   判重——窗口内的重复是 60% 重叠造成的重采，窗口外的相同内容视为真实
   重复保留；指纹并入 time_hint（有则必并），不同时刻的相同文本不误杀。
   非聊天类条目（卡片有标题）仍全局判重。
@@ -25,7 +25,15 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-CHAT_LIKE_TYPES = {"message", "comment", "system"}
+# 聊天类条目类型。必须与提取侧的类型词表双方对齐：
+# - prompts.py 微信 hint 要求 type=text/image/voice/video/link/sticker/system；
+# - 通用输出 schema 里聊天消息写作 message/comment/system。
+# 两套写法任一出现都必须走滑窗判重，否则微信消息（type=text）会被当成
+# 卡片全局判重，同文本远距重现的真实重复（如两条"收到"）被误删。
+CHAT_LIKE_TYPES = {
+    "message", "comment", "system",
+    "text", "image", "voice", "video", "link", "sticker",
+}
 
 MODE_CHAT = "chat"
 MODE_GLOBAL = "global"

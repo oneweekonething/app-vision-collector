@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -237,6 +238,119 @@ class VerifySessionTest(unittest.TestCase):
         ok, report = verify_session(session)
         self.assertFalse(ok)
         self.assertTrue(any("缺少 evidence 对象" in line for line in report))
+
+    # ---- 以下为溯源交叉核对回归：只对文件算哈希挡不住的篡改必须暴露 ----
+
+    def test_item_with_missing_evidence_sha256_is_invalid(self):
+        """删掉 evidence.sha256 → 必须判问题，不允许"无处可比"静默跳过。"""
+        session = build_session(Path(self.tmp.name))
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][0]["evidence"].pop("sha256")
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("缺少 evidence.sha256" in line for line in report))
+
+    def test_item_pointing_to_unregistered_screenshot_is_invalid(self):
+        """条目指向存在、哈希也自洽、但台账从未登记的截图 → 证据链断裂必须暴露。"""
+        session = build_session(Path(self.tmp.name))
+        extra = session / "screenshots" / "screen-0099.png"
+        extra.write_bytes(FAKE_PNG)
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        evidence = index["items"][0]["evidence"]
+        evidence["screenshot"] = "screenshots/screen-0099.png"
+        evidence["sha256"] = hashlib.sha256(FAKE_PNG).hexdigest()  # 文件与自报哈希都真实
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("未登记" in line for line in report))
+
+    def test_item_with_wrong_screen_index_is_invalid(self):
+        """屏号张冠李戴 → 与 manifest 台账交叉核对必须暴露。"""
+        session = build_session(Path(self.tmp.name))
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][0]["evidence"]["screen_index"] = 42
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("屏号与台账不符" in line for line in report))
+
+    def test_item_evidence_sha256_differing_from_manifest_is_invalid(self):
+        """evidence 与磁盘文件一致、但与台账记录不一致 → 交叉核对必须暴露。"""
+        session = build_session(Path(self.tmp.name))
+        target = next((session / "screenshots").glob("*.png"))
+        new_bytes = b"replaced-with-matching-evidence" + b"z" * 64
+        target.write_bytes(new_bytes)
+        index_path = session / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][0]["evidence"]["sha256"] = hashlib.sha256(new_bytes).hexdigest()
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        ok, report = verify_session(session)
+        self.assertFalse(ok)
+        self.assertTrue(any("与台账记录不一致" in line for line in report))
+
+    def test_missing_or_invalid_evidence_screen_index_is_invalid(self):
+        for bad in (None, "999", True, 0, -1, 1.0, {}, []):
+            with self.subTest(screen_index=bad):
+                index_path = self.session_dir / "index.json"
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+                index["items"][0]["evidence"]["screen_index"] = bad
+                index_path.write_text(json.dumps(index), encoding="utf-8")
+                ok, report = verify_session(self.session_dir)
+                self.assertFalse(ok)
+                self.assertTrue(any("合法的 evidence.screen_index" in line for line in report))
+        index["items"][0]["evidence"].pop("screen_index")
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        self.assertFalse(verify_session(self.session_dir)[0])
+
+    def test_item_repointed_to_another_registered_screen_is_invalid(self):
+        store = SessionStore.create(
+            Path(self.tmp.name), "wechat", "两屏", "采集", "TEST", "fake", "fake",
+        )
+        for screen in (1, 2):
+            record = store.save_screenshot(Screenshot(
+                FAKE_PNG + bytes([screen]), 100, 200, "test time", "pending",
+            ))
+            store.save_extraction(screen, record, {"items": [dict(ITEM, text=f"第{screen}屏")]})
+        index_path = store.finalize("completed")
+        self.assertTrue(verify_session(store.session_dir)[0])
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][0]["evidence"] = dict(index["items"][1]["evidence"])
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        ok, report = verify_session(store.session_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("对应的 items 台账事件不一致" in line for line in report))
+
+    def test_malformed_item_ids_report_problem_without_crashing(self):
+        manifest = self.session_dir / "manifest.jsonl"
+        original = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
+        for bad in (None, "itm_000001", [{}], [1], [""]):
+            with self.subTest(item_ids=bad):
+                events = [dict(event) for event in original]
+                for event in events:
+                    if event["event"] == "items":
+                        event["item_ids"] = bad
+                manifest.write_text("\n".join(json.dumps(event) for event in events) + "\n",
+                                    encoding="utf-8")
+                ok, report = verify_session(self.session_dir)
+                self.assertFalse(ok)
+                self.assertTrue(any("screen/item_ids" in line for line in report))
+
+    def test_index_item_id_must_match_manifest(self):
+        index_path = self.session_dir / "index.json"
+        original = json.loads(index_path.read_text(encoding="utf-8"))
+        for bad in (None, {}, [], "unregistered"):
+            with self.subTest(item_id=bad):
+                index = json.loads(json.dumps(original))
+                index["items"][0]["item_id"] = bad
+                index_path.write_text(json.dumps(index), encoding="utf-8")
+                ok, report = verify_session(self.session_dir)
+                self.assertFalse(ok)
+                self.assertTrue(any("item_id" in line or "未在 items 台账中登记" in line
+                                    for line in report))
 
     def test_missing_session_finished_is_invalid(self):
         """index 已写但终态事件缺失（crash window）→ 必须判问题。"""

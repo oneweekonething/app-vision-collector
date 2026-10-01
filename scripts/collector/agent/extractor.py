@@ -91,10 +91,12 @@ class ExtractAgent:
                     continue
 
             # 空条目过滤：text 或 title 任一有效即保留——微信消息靠 text，
-            # 小红书/红果等卡片可能只有 title；两者皆空才是提取噪声
+            # 小红书/红果等卡片可能只有 title；两者皆空才是提取噪声。
+            # None 先归一为空串再判断：str(None) 是非空的 "None"，会让
+            # text/title=null 的噪声条目漏进 index
             data["items"] = [
                 item for item in data.get("items", [])
-                if str(item.get("text", "")).strip() or str(item.get("title", "")).strip()
+                if str(item.get("text") or "").strip() or str(item.get("title") or "").strip()
             ]
             data["message_count"] = len(data["items"])
             data["raw_response"] = raw  # 证据以带图调用的原始输出为准

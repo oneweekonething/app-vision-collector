@@ -4,13 +4,16 @@
 用视觉大模型 + ADB 控制手机完成 App 内信息采集，全程截屏留存、逐条溯源。
 
 示例:
-    # 微信群聊采集
+    # 微信群聊采集（--task 会原样作为导航任务，不会自动拼入 --target，
+    # 因此任务描述必须写全 App 与目标）
     python3 scripts/collect.py --app wechat --target "AI 交流群" \
-        --task "进入该群聊并采集聊天消息" --max-screens 20
+        --task "打开微信，进入群聊「AI 交流群」，采集当前可见的聊天消息，\
+再向历史方向翻页采集更早的消息" --max-screens 20
 
     # 小红书搜索结果
     python3 scripts/collect.py --app xiaohongshu --target "手机摄影" \
-        --task "浏览搜索结果并采集笔记标题与作者" --max-screens 10
+        --task "打开小红书，搜索「手机摄影」并进入搜索结果页，\
+浏览并采集笔记标题与作者" --max-screens 10
 
     # 手机手动停到目标页面，只做截图+提取
     python3 scripts/collect.py --app generic --no-navigate \
@@ -23,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -62,6 +66,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="导航前不按 Home 复位（默认复位，避免分屏/深层页面导致坐标错乱）")
     parser.add_argument("--no-scroll", action="store_true",
                         help="只采集当前一屏，不翻页")
+    parser.add_argument("--scroll-direction", choices=["auto", "up", "down"], default="auto",
+                        help="手指滑动方向：auto=微信向历史下滑、其他 App 上滑；"
+                             "up/down 可显式覆盖，与 --dedup 无关")
     parser.add_argument("--dedup", choices=["auto", "chat", "global"], default="auto",
                         help="去重策略：chat=聊天类滑窗去重（同文本远距重现视为真实重复，"
                              "适用于微信聊天）；global=全部内容全局去重（同内容远距重现即"
@@ -129,6 +136,18 @@ def resolve_dedup_mode(app: str, choice: str = "auto") -> str:
     return "chat" if app.lower() in CHAT_DEDUP_APPS else "global"
 
 
+def resolve_scroll_direction(app: str, choice: str = "auto") -> str:
+    """按 App 形态解析翻页手势方向。
+
+    聊天视图锚定在最新消息端，翻看更早的历史消息必须手指下滑（反向）；
+    信息流（搜索结果/榜单）的下一屏内容在下方，正常手指上滑。只看 App
+    形态、与去重选项无关；--scroll-direction 可覆盖默认方向。
+    """
+    if choice != "auto":
+        return choice
+    return "down" if app.lower() in CHAT_DEDUP_APPS else "up"
+
+
 def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
     """主采集流程：导航 → （截屏 → 提取 → 去重）循环 → 收尾。"""
     device_id = adb.ensure_device(args.device_id)
@@ -193,9 +212,10 @@ def run_collection(args: argparse.Namespace, config: CollectorConfig) -> int:
 
         # 2. 截屏 → 提取 → 翻页 循环
         extractor = ExtractAgent(config, app=args.app, task=task)
+        scroll_direction = resolve_scroll_direction(args.app, args.scroll_direction)
 
         def scroll_forward() -> None:
-            adb.swipe_to_next_screen(device_id)
+            adb.swipe_to_next_screen(device_id, direction=scroll_direction)
             time.sleep(config.scroll_pause)
 
         no_new_streak = 0
@@ -289,7 +309,10 @@ def _summary(store: SessionStore, stop_reason: str, error: str | None,
     if error:
         print(f"[错误详情] {error}")
     print(f"[产物] {store.session_dir}")
-    print(f"[校验] python3 scripts/inspect_session.py {store.session_dir}")
+    # 校验命令按脚本自身位置给出绝对路径：从任意工作目录都能直接复制执行
+    inspect_script = Path(__file__).resolve().parent / "inspect_session.py"
+    inspect_command = shlex.join(["python3", str(inspect_script), str(store.session_dir)])
+    print(f"[校验] {inspect_command}")
     print(f"[索引] {index_path}")
     return 0 if stop_reason in {"completed", "no_new_items", "max_screens", "interrupted"} else 2
 

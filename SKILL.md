@@ -31,20 +31,25 @@ description: >-
    - `AVC_API_KEY`（或 `DASHSCOPE_API_KEY` / `BIGMODEL_API_KEY`）
    - 可选：`AVC_API_BASE`（默认 DashScope 兼容地址）、`AVC_VLM_MODEL`（默认 `qwen3-vl-plus`）、
      `AVC_NAV_MODEL`（默认 `autoglm-phone`，用于 UI 导航）
-4. Python 3.10+，依赖：`pip install -r requirements.txt`（openai / Pillow / requests）
+4. Python 3.10+，依赖：`pip install -r "<skill_dir>/requirements.txt"`（openai / Pillow）
 
 ## 标准工作流
+
+**路径约定**：本 skill 可能安装在任何位置，执行时当前目录通常是你自己的
+项目目录。下文所有 `<skill_dir>` 指本 SKILL.md 所在的 skill 安装目录——
+调用脚本一律用基于它的绝对路径（如
+`python3 "<skill_dir>/scripts/collect.py"`），路径加引号，不要假设当前目录就是 skill 目录。
 
 ### 1. 检查设备与能力
 
 ```bash
 adb devices                      # 确认设备在线
-python3 scripts/collect.py --check   # 自检：ADB、模型 API、依赖
+python3 "<skill_dir>/scripts/collect.py" --check   # 自检：ADB、模型 API、依赖
 ```
 
 ### 2. 选择采集攻略
 
-按目标 App 阅读 `references/` 下对应攻略，再开始采集：
+按目标 App 阅读 `<skill_dir>/references/` 下对应攻略，再开始采集：
 
 - `references/wechat.md` — 微信（群聊/单聊消息）
 - `references/xiaohongshu.md` — 小红书（搜索结果、笔记、评论）
@@ -55,19 +60,25 @@ python3 scripts/collect.py --check   # 自检：ADB、模型 API、依赖
 
 ### 3. 执行采集
 
+显式 `--task` 会**原样**作为导航与提取任务，脚本不会再把 `--app`/`--target`
+拼进去。因此任务描述必须自包含：写明打开哪个 App、进入哪个群/搜索什么词，
+以及采集范围。采集阶段的手指方向由 `--scroll-direction auto/up/down` 控制，
+不会从任务文字推断：`auto` 对微信下滑采集历史，其他 App 上滑；在微信历史
+位置采集更新消息或采集朋友圈时，显式用 `--scroll-direction up`。
+
 ```bash
 # 例：采集微信群「AI 交流群」的聊天消息
-python3 scripts/collect.py \
+python3 "<skill_dir>/scripts/collect.py" \
   --app wechat \
   --target "AI 交流群" \
-  --task "进入该群聊并采集当前可见的聊天消息，然后向上翻页补充历史消息" \
+  --task "打开微信，进入群聊「AI 交流群」，采集当前可见的聊天消息，再向历史方向翻页采集更早的消息" \
   --max-screens 20
 
 # 例：采集小红书搜索结果
-python3 scripts/collect.py \
+python3 "<skill_dir>/scripts/collect.py" \
   --app xiaohongshu \
   --target "手机摄影技巧" \
-  --task "在搜索结果页逐屏浏览并采集笔记标题、作者、摘要" \
+  --task "打开小红书，在搜索框搜索「手机摄影技巧」，进入搜索结果页后逐屏浏览并采集笔记标题、作者、摘要" \
   --max-screens 10
 ```
 
@@ -78,7 +89,7 @@ python3 scripts/collect.py \
 ### 4. 校验溯源
 
 ```bash
-python3 scripts/inspect_session.py collections/<session-dir>
+python3 "<skill_dir>/scripts/inspect_session.py" "collections/<session-dir>"
 ```
 
 重新计算每张截图的 SHA-256，与 manifest.jsonl 中的记录比对，打印每屏的

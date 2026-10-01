@@ -363,6 +363,7 @@ class FailureFeedbackTest(unittest.TestCase):
                 mock.patch("collector.adb.get_current_app",
                            return_value="com.tencent.mm/.ui.LauncherUI"), \
                 mock.patch("collector.adb.get_screen_size", return_value=(1080, 2400)), \
+                mock.patch("collector.adb.ui_texts_at_point", return_value=[]), \
                 mock.patch("collector.adb.tap",
                            side_effect=[AdbCommandError(["input", "tap"], 1, "device offline"), None]):
             result = agent.run("进入群聊")
@@ -383,6 +384,7 @@ class FailureFeedbackTest(unittest.TestCase):
                 mock.patch("collector.adb.get_current_app",
                            return_value="com.tencent.mm/.ui.LauncherUI"), \
                 mock.patch("collector.adb.get_screen_size", return_value=(1080, 2400)), \
+                mock.patch("collector.adb.ui_texts_at_point", return_value=[]), \
                 mock.patch("collector.adb.tap",
                            side_effect=AdbCommandError(["input", "tap"], 1, "device offline")):
             result = agent.run("进入群聊")

@@ -79,6 +79,17 @@ class ParseJsonTest(unittest.TestCase):
         self.assertEqual(out["items"][0]["title"], "都市重生之最强剑仙")
         self.assertEqual(out["items"][1]["text"], "你好")
 
+    def test_null_text_and_title_items_filtered(self):
+        # text/title 为 JSON null：str(None) 是非空的 "None"，曾让
+        # text=null 的噪声条目绕过过滤进入 index
+        raw = ('{"items": ['
+               '{"type": "message", "title": null, "text": null},'
+               '{"type": "message", "title": null, "text": "你好"}]}')
+        agent, _ = make_agent([raw])
+        out = agent.extract(make_screenshot())
+        self.assertEqual(out["message_count"], 1)
+        self.assertEqual(out["items"][0]["text"], "你好")
+
     def test_fenced_json_with_junk(self):
         raw = f"好的，结果如下：\n```json\n{GOOD_JSON}\n```\n以上。"
         self.assertEqual(len(_parse_json(raw)["items"]), 2)

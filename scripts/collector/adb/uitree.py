@@ -56,14 +56,23 @@ def _nodes(xml: str) -> list[dict]:
 
 
 def _parse_tree(xml: str) -> ET.Element | None:
-    """解析控件树为 XML 树；容忍前置垃圾行，畸形输出返回 None 走正则回退。"""
+    """解析控件树为 XML 树；容忍前置垃圾行与尾部状态行。
+
+    `uiautomator dump /dev/tty` 会在 XML 之后附加一行
+    "UI hierchary dumped to: /dev/tty"（Android DumpCommand 的固定行为），
+    ET.fromstring 遇到根元素后的垃圾会直接 ParseError——而树解析一旦失败
+    走正则回退，护栏就丢失兄弟节点的按钮文字（如"发送"），由拒绝变放行。
+    因此先截取 </hierarchy> 之前的部分再解析；畸形输出才返回 None 走回退。
+    """
     start = xml.find("<?xml")
     if start == -1:
         start = xml.find("<hierarchy")
     if start == -1:
         return None
+    end = xml.find("</hierarchy>")
+    fragment = xml[start : end + len("</hierarchy>")] if end != -1 else xml[start:]
     try:
-        return ET.fromstring(xml[start:])
+        return ET.fromstring(fragment)
     except ET.ParseError:
         return None
 
@@ -129,16 +138,37 @@ def _texts_at_tree(root: ET.Element, x: int, y: int) -> list[str]:
 
 
 def _texts_at_flat(xml: str, x: int, y: int) -> list[str]:
-    """正则几何包含回退：dump 输出畸形、无法建树时使用。"""
-    containing = [n for n in _nodes(xml) if n["x1"] <= x < n["x2"] and n["y1"] <= y < n["y2"]]
+    """正则几何包含回退：dump 输出畸形、无法建树时使用。
+
+    没有层级信息，用几何包含近似树语义：按钮级可点击节点（面积 ≤ 全屏
+    25%）收集 bounds 完全落入其内的全部节点文本——"icon + 兄弟文字"式
+    按钮即使建不了树也能拿到标签；整页大容器仍只算自身文本。
+    """
+    nodes = _nodes(xml)
+    containing = [n for n in nodes if n["x1"] <= x < n["x2"] and n["y1"] <= y < n["y2"]]
     if not containing:
         return []
 
+    def area(n: dict) -> int:
+        return (n["x2"] - n["x1"]) * (n["y2"] - n["y1"])
+
+    # 屏幕基准取文档序第一个包含节点（与树路径的 outermost 一致）
+    screen_area = area(containing[0])
+
     texts: list[str] = []
-    innermost = min(containing, key=lambda n: (n["x2"] - n["x1"]) * (n["y2"] - n["y1"]))
+    innermost = min(containing, key=area)
     texts.extend(innermost["texts"])
     for node in containing:
-        if node["clickable"]:
+        if not node["clickable"]:
+            continue
+        if area(node) <= screen_area * _CLICKABLE_SUBTREE_AREA_RATIO:
+            texts.extend(
+                text for sub in nodes
+                if sub["x1"] >= node["x1"] and sub["y1"] >= node["y1"]
+                and sub["x2"] <= node["x2"] and sub["y2"] <= node["y2"]
+                for text in sub["texts"]
+            )
+        else:
             texts.extend(node["texts"])
 
     seen: set[str] = set()

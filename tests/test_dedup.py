@@ -108,6 +108,43 @@ class ChatModeDefaultTest(unittest.TestCase):
         self.assertFalse(dedup.admit(2, dict(item)))
 
 
+class WechatTypeVocabularyTest(unittest.TestCase):
+    """微信提取 hint 要求 type=text/image/voice/...——这套词表必须走聊天滑窗。"""
+
+    def setUp(self):
+        self.dedup = Deduplicator(window=3)
+
+    @staticmethod
+    def wechat_text(text="收到", sender="张三", time=None):
+        item = {"type": "text", "sender": sender, "text": text, "title": None}
+        if time:
+            item["time_hint"] = time
+        return item
+
+    def test_wechat_types_use_sliding_window(self):
+        # 若 type=text 不算聊天类，会走全局判重，窗口外的真实重复被误删
+        first = self.wechat_text()
+        self.assertTrue(self.dedup.admit(1, first))
+        for screen in (2, 3, 4):
+            self.assertFalse(self.dedup.admit(screen, dict(first)), screen)
+        self.assertTrue(self.dedup.admit(5, dict(first)))  # 窗口外=真实重复，保留
+
+    def test_wechat_types_merge_time_hint(self):
+        a = self.wechat_text(time="2026年09月27日 19:00")
+        b = self.wechat_text(time="2026年09月27日 20:30")
+        self.assertNotEqual(fingerprint(a), fingerprint(b))
+        self.assertTrue(self.dedup.admit(1, a))
+        self.assertTrue(self.dedup.admit(2, b))  # 不同时刻的两条"收到"都保留
+
+    def test_message_media_types_all_chat_like(self):
+        for chat_type in ("image", "voice", "video", "link", "sticker"):
+            dedup = Deduplicator(window=1)
+            item = {"type": chat_type, "sender": "张三", "text": "[图片]", "title": None}
+            self.assertTrue(dedup.admit(1, item), chat_type)
+            self.assertFalse(dedup.admit(2, dict(item)), chat_type)  # 窗口内重采
+            self.assertTrue(dedup.admit(3, dict(item)), chat_type)   # 窗口外真实重复
+
+
 def png_bytes(upper: int, lower: int) -> bytes:
     from PIL import Image
 

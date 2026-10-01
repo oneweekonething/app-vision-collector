@@ -114,4 +114,5 @@ python3 scripts/inspect_session.py <session-dir>
 ```
 
 校验内容：台账可解析、截图存在且哈希一致、index 每条 evidence 可回溯、
+item_id 与对应 items 事件的屏号及截图哈希一致、屏号必须是正整数、
 totals 与台账一致、每屏有提取文件。任何一项失败退出码为 1。

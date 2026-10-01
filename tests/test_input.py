@@ -152,5 +152,39 @@ class InputTextSafeTest(unittest.TestCase):
         self.assertEqual(len(restores), 2)  # 恢复重试了一次
 
 
+class SwipeDirectionTest(unittest.TestCase):
+    """翻页方向：信息流上滑；聊天（微信）翻历史必须反向下滑。"""
+
+    def _swipe_recorded(self, direction):
+        commands = []
+        with mock.patch.object(adb_input, "get_screen_size", return_value=(1080, 2400)), \
+                mock.patch.object(adb_input, "swipe",
+                                  side_effect=lambda *a, **kw: commands.append(a)):
+            adb_input.swipe_to_next_screen("TEST", direction=direction)
+        return commands[0]  # (x, start_y, x, end_y)
+
+    def test_up_swipes_finger_upward(self):
+        _, start_y, _, end_y = self._swipe_recorded("up")
+        self.assertGreater(start_y, end_y)   # 0.70h → 0.30h
+
+    def test_down_swipes_finger_downward(self):
+        _, start_y, _, end_y = self._swipe_recorded("down")
+        self.assertLess(start_y, end_y)      # 0.30h → 0.70h：朝历史消息方向
+
+    def test_direction_is_defaulted_to_up(self):
+        commands = []
+        with mock.patch.object(adb_input, "get_screen_size", return_value=(1080, 2400)), \
+                mock.patch.object(adb_input, "swipe",
+                                  side_effect=lambda *a, **kw: commands.append(a)):
+            adb_input.swipe_to_next_screen("TEST")
+        _, start_y, _, end_y = commands[0]
+        self.assertGreater(start_y, end_y)
+
+    def test_unknown_direction_rejected(self):
+        with mock.patch.object(adb_input, "get_screen_size", return_value=(1080, 2400)):
+            with self.assertRaises(ValueError):
+                adb_input.swipe_to_next_screen("TEST", direction="left")
+
+
 if __name__ == "__main__":
     unittest.main()

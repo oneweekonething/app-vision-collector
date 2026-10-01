@@ -178,13 +178,20 @@ python3 scripts/collect.py --check
 ### 2. 采集
 
 ```bash
-# 微信群聊
+# 微信群聊（--task 会原样作为导航任务，必须写全 App 与目标；
+# 微信翻历史由采集器自动用手指下滑完成）
 python3 scripts/collect.py --app wechat --target "AI 交流群" \
-  --task "进入该群聊，采集当前可见消息并向上翻页补充历史" --max-screens 20
+  --task "打开微信，进入群聊「AI 交流群」，采集当前可见的聊天消息，再向历史方向翻页采集更早的消息" \
+  --max-screens 20
+
+# 微信当前历史位置向更新消息采集，或浏览朋友圈：显式覆盖手指方向
+python3 scripts/collect.py --app wechat --no-navigate --scroll-direction up \
+  --task "采集当前页面的信息并继续浏览下方内容" --max-screens 10
 
 # 小红书搜索
 python3 scripts/collect.py --app xiaohongshu --target "手机摄影技巧" \
-  --task "浏览搜索结果并采集笔记标题、作者、摘要" --max-screens 10
+  --task "打开小红书，搜索「手机摄影技巧」并进入搜索结果页，逐屏浏览并采集笔记标题、作者、摘要" \
+  --max-screens 10
 
 # 红果免费短剧等信息流 App：全局内容去重（auto 即可自动判定）
 python3 scripts/collect.py --app 红果免费短剧 --no-navigate \

@@ -72,6 +72,21 @@ class TextsAtTest(unittest.TestCase):
         # 部分设备 dump 输出前有 INFO 行
         self.assertIn("发送", uitree.texts_at("INFO: dumped\n" + SAMPLE_XML, 990, 2260))
 
+    def test_trailing_status_line_tolerated(self):
+        # uiautomator dump /dev/tty 会在 XML 后附加
+        # "UI hierchary dumped to: /dev/tty" 状态行（Android DumpCommand 行为）：
+        # 树解析必须容忍它，否则跌回正则回退、丢失兄弟节点的按钮文字
+        xml = SIBLING_XML + "UI hierchary dumped to: /dev/tty\n"
+        self.assertIsNotNone(uitree._parse_tree(xml))
+        self.assertIn("发送", uitree.texts_at(xml, 927, 2260))
+
+    def test_malformed_xml_fallback_finds_sibling_button_text(self):
+        # 真建不了树（无闭合标签）时，正则回退用几何包含近似子树语义：
+        # 点击落在 icon 上仍能拿到兄弟"发送"文字，护栏不因回退而放行写按钮
+        truncated = SIBLING_XML[:SIBLING_XML.rfind("</hierarchy>")]
+        self.assertIsNone(uitree._parse_tree(truncated))
+        self.assertIn("发送", uitree.texts_at(truncated, 927, 2260))
+
     def test_invalid_bounds_skipped(self):
         xml = '<node text="x" clickable="true" bounds="[10,10][10,10]"/>' \
               '<node text="y" clickable="true" bounds="[0,0][100,100]"/>'

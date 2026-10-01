@@ -54,20 +54,28 @@ def swipe(
     )
 
 
-def swipe_to_next_screen(device_id: str | None = None) -> None:
-    """手指上滑翻到"下一屏"（聊天中即查看更早的历史消息）。
+def swipe_to_next_screen(device_id: str | None = None, direction: str = "up") -> None:
+    """翻到"下一屏"内容；固定 40% 屏距、保留 60% 重叠。
 
-    固定 40% 屏距、保留 60% 重叠，配合随机抖动模拟真人手势：
-    重叠保证内容不漏采，抖动降低机械滑动被 App 风控识别的概率。
+    direction="up"（默认）：手指上滑，信息流（小红书/红果等）向下翻页。
+    direction="down"：手指下滑，微信等聊天视图锚定在最新消息端，查看
+    更早的历史消息必须反向滑动——手指上滑只会朝更新的消息移动，从
+    最新消息端出发会反复重采同一屏并提前误停。
+
+    配合随机抖动模拟真人手势：重叠保证内容不漏采，抖动降低机械滑动
+    被 App 风控识别的概率。
     """
+    if direction not in ("up", "down"):
+        raise ValueError(f"未知滑动方向: {direction}（可选 up/down）")
     width, height = get_screen_size(device_id)
     jitter = max(6, int(height * 0.01))
 
     x = width // 2 + random.randint(-jitter, jitter)
-    start_y = int(height * 0.70) + random.randint(-jitter, jitter)
-    end_y = int(height * 0.30) + random.randint(-jitter, jitter)
+    upper_y = int(height * 0.30) + random.randint(-jitter, jitter)
+    lower_y = int(height * 0.70) + random.randint(-jitter, jitter)
     duration = random.randint(420, 680)
 
+    start_y, end_y = (lower_y, upper_y) if direction == "up" else (upper_y, lower_y)
     swipe(x, start_y, x, end_y, duration_ms=duration, device_id=device_id)
 
 
