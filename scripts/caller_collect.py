@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 import uuid
@@ -24,6 +25,10 @@ from collector.agent.step_agent import _denormalize
 from collector.config import CHAT_DEDUP_APPS
 from collector.store import SessionStore
 from collector.store.session_store import _atomic_write_bytes
+
+
+class ActionLimitReached(ValueError):
+    """动作上限拒绝：尚未尝试执行动作，不属于设备/执行错误。"""
 
 
 def _positive(value: str) -> int:
@@ -85,7 +90,8 @@ def execute_action(store: SessionStore, action: dict) -> dict:
     device = metadata["device_id"]
     steps = sum(event["event"] == "action_attempt" for event in _events(store))
     if steps >= metadata["max_actions"]:
-        raise ValueError("已达到 max-actions，请收尾会话")
+        store._manifest({"event": "action_rejected", "action": action, "code": "max_actions"})
+        raise ActionLimitReached("已达到 max-actions，请收尾会话")
     action = {**action, "kind": "do"}
     store._manifest({"event": "action_attempt", "action": action})
     name = action.get("name")
@@ -126,6 +132,30 @@ def execute_action(store: SessionStore, action: dict) -> dict:
         time.sleep(seconds)
     store._manifest({"event": "action", "action": action, "allowed": True})
     return {"allowed": True, "next": "observe"}
+
+
+def _validate_extraction(extraction: dict) -> None:
+    """登记前检查可选字段；格式错误不写入提取文件或改变去重状态。"""
+    if "screen_summary" in extraction and not isinstance(extraction["screen_summary"], str):
+        raise ValueError("screen_summary 必须是字符串，请调用者修正 JSON")
+    for index, item in enumerate(extraction["items"]):
+        prefix = f"items[{index}]"
+        for field in ("type", "title", "text", "sender", "time_hint"):
+            if item.get(field) is not None and not isinstance(item[field], str):
+                raise ValueError(f"{prefix}.{field} 必须是字符串或 null，请调用者修正 JSON")
+        if "confidence" in item and item["confidence"] not in ("high", "medium", "low"):
+            raise ValueError(f"{prefix}.confidence 必须是 high/medium/low，请调用者修正 JSON")
+        if "extra" in item and not isinstance(item["extra"], dict):
+            raise ValueError(f"{prefix}.extra 必须是 JSON 对象，请调用者修正 JSON")
+        bbox = item.get("bbox")
+        if bbox is not None:
+            if not isinstance(bbox, list) or len(bbox) != 4 or any(
+                not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not 0 <= value <= 999 or not math.isfinite(value) for value in bbox
+            ):
+                raise ValueError(f"{prefix}.bbox 必须是四个 0-999 有限数值或 null，请调用者修正 JSON")
+            if bbox[0] > bbox[2] or bbox[1] > bbox[3]:
+                raise ValueError(f"{prefix}.bbox 必须满足 x1≤x2、y1≤y2，请调用者修正 JSON")
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -173,6 +203,8 @@ def run(args: argparse.Namespace) -> dict:
             raise ValueError("动作必须是 JSON 对象")
         try:
             return execute_action(store, action)
+        except ActionLimitReached:
+            raise
         except Exception as exc:
             store._manifest({"event": "action_error", "action": action, "error": str(exc)})
             raise
@@ -180,10 +212,12 @@ def run(args: argparse.Namespace) -> dict:
         if store.screen_count >= metadata["max_screens"]:
             raise ValueError("已达到 max-screens，请 finish --reason max_screens")
         # capture 是调用者在 observe 看图核验目标页之后作出的采集决定。
+        current_app = adb.get_current_app(device) if store._navigation is None else ""
+        record = store.save_screenshot(adb.capture(device))
+        # 只在证据成功落盘后登记导航成功，截图失败仍可按 0 屏导航失败收尾。
         if store._navigation is None:
             store.record_navigation(True, "caller_verified", "调用者已看图核验目标页",
-                                    current_app=adb.get_current_app(device))
-        record = store.save_screenshot(adb.capture(device))
+                                    current_app=current_app)
         return {**record, "screenshot": str(store.session_dir / record["path"]),
                 "prompt": build_extract_prompt(metadata["app"], metadata["task"]),
                 "next": "调用者打开这张证据图片，用自身视觉能力生成 JSON，再 record"}
@@ -196,10 +230,7 @@ def run(args: argparse.Namespace) -> dict:
             return {"screen": screen, "extraction_failed": True, "next": "finish 或继续浏览"}
         raw = args.result_file.read_text("utf-8")
         extraction = _parse_json(raw)
-        for item in extraction["items"]:
-            for field in ("type", "title", "text", "sender", "time_hint"):
-                if item.get(field) is not None and not isinstance(item[field], str):
-                    raise ValueError(f"{field} 必须是字符串或 null，请调用者修正 JSON")
+        _validate_extraction(extraction)
         extraction["items"] = [item for item in extraction["items"]
                                if (item.get("text") or "").strip()
                                or (item.get("title") or "").strip()]

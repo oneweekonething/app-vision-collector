@@ -35,6 +35,14 @@ APP_EXTRACT_HINTS = {
     ),
 }
 
+_EXTRACT_APP_ALIASES = {
+    "微信": "wechat",
+    "小红书": "xiaohongshu",
+    "rednote": "xiaohongshu",
+    "红果": "hongguo",
+    "红果免费短剧": "hongguo",
+}
+
 # 各 App 的导航任务模板（collect.py 组装导航任务时使用）
 APP_NAV_TEMPLATES = {
     "wechat": (
@@ -129,8 +137,7 @@ NAV_VERIFY_PROMPT = """请判断当前手机截图是否已经满足下面的导
 def build_extract_prompt(app: str, task: str) -> str:
     """提取 Agent 提示词：单屏截图 → 结构化 JSON。
 
-    注入当天/昨天/本周日期，让模型把截图里的相对时间（"昨天 12:10"、
-    "周五 17:14"）换算成绝对时间，这是时间字段可溯源的前提。
+    注入当天/昨天及最近同名星期的日历参考，仅换算能明确确定日期的时间。
     """
     today = datetime.today()
     weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -147,7 +154,7 @@ def build_extract_prompt(app: str, task: str) -> str:
             diff += 7
         week_dates[weekday_short[i]] = (today - timedelta(days=diff)).strftime("%Y年%m月%d日")
 
-    app_key = "wechat" if app == "微信" else app.lower()
+    app_key = _EXTRACT_APP_ALIASES.get(app.lower(), app.lower())
     app_hint = APP_EXTRACT_HINTS.get(app_key, "这是某个手机 App 的界面截图。")
     item_types = {
         "wechat": "text|image|voice|video|link|sticker|system",

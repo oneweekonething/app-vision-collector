@@ -72,8 +72,9 @@ caller 模式的 raw_response 是调用者提交的原始 JSON；API 模式为�
 |-------|----------|
 | `session_started` | 会话元数据全量 |
 | `observation` | caller 导航图的 `path`, `sha256`, `captured_at`（不进入条目 evidence） |
-| `action_attempt` | caller 动作 JSON；拒绝和设备错误也计入动作上限 |
+| `action_attempt` | caller 动作 JSON；护栏拒绝和设备错误也计入动作上限 |
 | `action` / `action_error` | caller 动作判定或设备错误 |
+| `action_rejected` | caller 动作上限拒绝；`code=max_actions`，不计动作尝试 |
 | `navigation` | `success`, `reason`, `message`, `steps`, `current_app` |
 | `screenshot` | `screen`, `path`, `sha256`, `bytes`, `width/height`, `captured_at` |
 | `items` | `screen`, `screenshot_sha256`, `extraction_sha256`, `extracted/new/duplicates`, `item_ids` |

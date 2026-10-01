@@ -75,6 +75,10 @@ python3 "<skill_dir>/scripts/caller_collect.py" capture "<session_dir>"
 不可见时间用 null，图片/语音用攻略规定的占位描述；不可将上一屏内容补入。
 没有可见条目用空数组。`bbox` 为 0–999 坐标；evidence 和 item_id 由脚本生成。
 
+可选字段若提供：screen_summary 必须是字符串；extra 必须是 JSON 对象；
+confidence 必须为 high/medium/low；bbox 为 null 或四个 0–999 的有限数值，
+满足 x1≤x2、y1≤y2。省略时采用默认值，非法字段会在写盘前拒绝。
+
 ```bash
 python3 "<skill_dir>/scripts/caller_collect.py" record "<session_dir>" \
   --result-file "<scratch_dir>/result.json"

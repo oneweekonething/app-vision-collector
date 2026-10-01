@@ -166,6 +166,99 @@ class CallerCollectTest(unittest.TestCase):
         self.assertEqual(len(list((self.session / "screenshots").glob("*.png"))), 0)
         self.assert_valid()
 
+    def test_first_capture_failure_can_finish_as_navigation_failed(self):
+        self.device["capture"].side_effect = caller.adb.ScreenshotError("设备断开")
+        self.session_command("capture", code=1)
+        self.session_command("finish", "--reason", "navigation_failed", "--error", "设备断开")
+        self.assertEqual(len([e for e in self.events() if e["event"] == "navigation"]), 1)
+        self.assert_valid()
+
+    def test_screenshot_save_failure_does_not_record_navigation_success(self):
+        with patch.object(caller.SessionStore, "save_screenshot", side_effect=OSError("磁盘满")):
+            self.session_command("capture", code=1)
+        self.assertFalse(any(e["event"] == "navigation" for e in self.events()))
+        self.session_command("finish", "--reason", "navigation_failed", "--error", "磁盘满")
+        self.assert_valid()
+
+    def test_first_capture_can_be_retried_after_device_failure(self):
+        self.device["capture"].side_effect = [caller.adb.ScreenshotError("暂时离线"),
+                                             self.device["capture"].return_value]
+        self.session_command("capture", code=1)
+        self.assertFalse(any(e["event"] == "navigation" for e in self.events()))
+        self.session_command("capture")
+        self.record()
+        self.session_command("finish")
+        self.assertEqual(len([e for e in self.events() if e["event"] == "navigation"]), 1)
+        self.assert_valid()
+
+    def test_invalid_optional_fields_can_be_repaired_without_writing_evidence(self):
+        self.session_command("capture")
+        before = (self.session / "manifest.jsonl").read_bytes()
+        invalid_items = [
+            {"bbox": "left"}, {"bbox": [0, 1, 2]}, {"bbox": [0, False, 2, 3]},
+            {"bbox": [0, 1, 1000, 3]}, {"bbox": [20, 10, 10, 20]},
+            {"bbox": [0, 1, 2, float("nan")]}, {"bbox": [0, 1, 2, float("inf")]},
+            {"confidence": "certain"}, {"confidence": []}, {"confidence": None},
+            {"extra": []}, {"extra": "价格"}, {"extra": None},
+        ]
+        for invalid in invalid_items:
+            with self.subTest(invalid=invalid):
+                self.record([{**ITEM, **invalid}], code=1)
+                self.assertEqual((self.session / "manifest.jsonl").read_bytes(), before)
+                self.assertFalse((self.session / "extracted/screen-0001.json").exists())
+        for summary in (None, [], {}):
+            self.result_file.write_text(json.dumps({"screen_summary": summary, "items": [ITEM]}))
+            self.session_command("record", "--result-file", str(self.result_file), code=1)
+            self.assertEqual((self.session / "manifest.jsonl").read_bytes(), before)
+        self.record()
+        self.session_command("finish")
+        self.assert_valid()
+
+    def test_valid_optional_fields_are_preserved(self):
+        self.session_command("capture")
+        item = {**ITEM, "bbox": [0, 1.5, 999, 800], "confidence": "low",
+                "extra": {"time_raw": "周四", "count": 3}}
+        self.result_file.write_text(json.dumps({"screen_summary": "可见消息", "items": [
+            item, {"text": "另一条", "bbox": None, "extra": {}, "confidence": "medium"},
+        ]}))
+        self.session_command("record", "--result-file", str(self.result_file))
+        self.session_command("finish")
+        index = json.loads((self.session / "index.json").read_text())
+        stored = index["items"][0]
+        self.assertEqual(stored["evidence"]["bbox"], item["bbox"])
+        self.assertEqual(stored["confidence"], "low")
+        self.assertEqual(stored["extra"], item["extra"])
+        self.assertIsNone(index["items"][1]["evidence"]["bbox"])
+        self.assert_valid()
+
+    def test_action_limit_does_not_log_an_execution_error_or_attempt(self):
+        self.session = Path(self.command("start", "--app", "generic", "--task", "当前屏",
+                                         "--data-dir", str(self.root), "--max-actions", "1")
+                            [1]["session"])
+        self.action({"name": "Back"})
+        before = self.events()
+        self.action({"name": "Back"}, code=1)
+        after = self.events()
+        self.assertEqual(len([e for e in after if e["event"] == "action_attempt"]), 1)
+        self.assertFalse(any(e["event"] == "action_error" for e in after))
+        self.assertEqual(after[:len(before)], before)
+        self.assertEqual(after[-1]["event"], "action_rejected")
+        self.assertEqual(after[-1]["code"], "max_actions")
+        self.device["back"].assert_called_once()
+
+    def test_app_aliases_select_the_same_extract_schema(self):
+        for aliases, expected in [
+            (("微信", "wechat", "WeChat"), "text|image|voice|video|link|sticker|system"),
+            (("小红书", "xiaohongshu", "XIAOHONGSHU", "rednote"), "note|comment"),
+            (("红果", "红果免费短剧", "hongguo"),
+             "message|note|comment|product|profile|search_result|system|other"),
+        ]:
+            prompts = [caller.build_extract_prompt(app, "当前屏") for app in aliases]
+            hints = [prompt.split("## 界面说明\n")[1].split("## 提取规则")[0] for prompt in prompts]
+            self.assertTrue(all(hint == hints[0] for hint in hints))
+            for prompt in prompts:
+                self.assertIn(f'"type": "{expected}"', prompt)
+
     def test_invalid_finish_does_not_write_partial_failure_event(self):
         self.session_command("capture")
         previous = (self.session / "manifest.jsonl").read_bytes()
