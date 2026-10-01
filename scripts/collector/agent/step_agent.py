@@ -22,8 +22,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
-
 from collector import adb
 from collector.adb.connection import AdbCommandError
 from collector.agent.prompts import NAV_VERIFY_PROMPT, build_nav_system_prompt
@@ -71,7 +69,11 @@ class StepAgent:
         self.device_id = device_id
         self.verbose = verbose
         self.max_steps = config.nav_steps
-        self.client = client or OpenAI(base_url=config.api_base, api_key=config.api_key)
+        if client is None:
+            from openai import OpenAI
+
+            client = OpenAI(base_url=config.api_base, api_key=config.api_key)
+        self.client = client
         self.guard = ActionGuard()
         # GLM-5.x 强制思考模型：调低思考档位（按模型名判定，详见 extractor）
         self.extra_body = (

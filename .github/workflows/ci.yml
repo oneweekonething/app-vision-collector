@@ -18,8 +18,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install dependencies
-        run: pip install -r requirements.txt ruff
+      - name: Install base dependencies (no model SDK)
+        run: pip install -r requirements.txt
+      - name: Caller workflow without model SDK or keys
+        run: |
+          python -c "import importlib.util; assert importlib.util.find_spec('openai') is None"
+          python -m unittest discover -s tests -p 'test_caller_collect.py' -v
+      - name: Install optional compatibility dependencies and lint
+        run: pip install -r requirements-api.txt ruff
       - name: Lint
         run: ruff check scripts tests
       - name: Unit tests (no device / no API key required)

@@ -1,129 +1,61 @@
 # 架构说明
 
-## 设计原则
+默认入口是 `caller_collect.py`。视觉与推理由调用 skill 的助手提供：打开本地
+截图、核验目标页、决定动作、生成提取 JSON。脚本不创建模型客户端、不请求
+模型服务、不读取 API Key；基础依赖仅 Pillow。
 
-1. **证据先行（Evidence First）**：截屏是唯一事实来源，结构化数据只是截屏的
-   派生视图。先落盘、后提取，任何提取失败都不影响证据完整性。
-2. **零侵入采集**：不逆向协议、不注入、不 Root；只有 ADB 官方通道（截屏、
-   input 事件、IME 广播）。代价是速度与覆盖率，换来的是普适性与低风险。
-3. **可审计**：manifest 台账只追加且逐条 fsync；提取原始输出留档；
-   SHA-256 全程可验；所有落盘走 tmp + fsync + 原子 rename，进程中断
-   不会留下半个文件。
-4. **只读动作面（三层防线）**：导航动作集合不含写原语；动作执行前经
-   ActionGuard——模型自报的 intent / target_text 命中"发送 / 点赞 /
-   支付 / 删除 / 授权"等写操作语义即拒绝；Tap 还会经 uiautomator
-   控件树**独立核验**（点击坐标处真实控件文本命中关键词即拒绝，
-   与模型自报无关——模型把"发送"谎报成 open_detail 也拦得住）。
-   dump 失败（FLAG_SECURE 等）自动降级为仅自报判定并记录日志。
-   连续拦截则终止导航。这是纵深防御而非形式化验证。
-5. **失败即停**：导航返回结构化 NavigationResult（成功 / 失败原因 /
-   步数 / 当前 App），finish 后由模型核验"当前页是否满足目标"；导航
-   失败立即终止会话，不把错误页面的数据当成合法证据入库。
-   `inspect_session.py` 校验该不变量：navigation_failed 会话必须
-   `navigation.success=false` 且 0 截图（0 屏是预期结果而非损坏）。
+## 数据流
 
-## 模块与数据流
-
-```
-collect.py
-  │
-  ├─ adb.connection.ensure_device()        设备确认
-  │
-  ├─ SessionStore.create()                 ── 唯一会话目录（微秒+uuid，不允许复用）
-  │
-  ├─ StepAgent.run(nav_task) → NavigationResult   ── 导航阶段（可选）
-  │    截屏 ──▶ nav VLM (autoglm-phone)    do(action=...)/finish(...)
-  │      ▲            │ 解析（DSL 优先，兼容 JSON）
-  │      │            ▼
-  │      │      ActionGuard 只读护栏 ── deny ─▶ [GUARD] 反馈，重新规划
-  │      │            │ allow（自报语义 + 控件树独立核验）
-  │      │            ▼
-  │      └── adb.input 执行 ◀──┘            Tap/Swipe/Type/Back/Home/Launch/Wait
-  │           （失败以 [ACTION_FAILED] 反馈模型，连续失败终止）
-  │    finish ──▶ 目标页核验（未通过则要求继续导航）
-  │    失败 ──▶ stop_reason=navigation_failed，本会话不采集
-  │
-  ├─ 循环（采集阶段）
-  │    adb.screenshot.capture()  ─▶ SessionStore.save_screenshot()   [证据落盘+台账]
-  │    ExtractAgent.extract()    ─▶ SessionStore.save_extraction()   [去重+溯源条目]
-  │    adb.input.swipe_to_next_screen() → 下一屏（感知哈希判断画面位移）
-  │
-  └─ SessionStore.finalize()     ─▶ index.json + session_finished 事件
+```text
+start → SessionStore.create（execution_mode=caller）
+observe → ADB 截图 → navigation/ + observation 台账 → 调用者打开 PNG
+调用者动作 JSON → action → ActionGuard → ADB → 再次 observe 看图
+调用者确认目标 → capture → screenshots/ + screenshot 台账
+调用者打开证据 PNG → 根据提取提示词生成 JSON → record
+record → schema 校验 → SessionStore.save_extraction → 去重 + items 台账
+finish → index.json + session_finished 台账 → inspect_session.py 校验
 ```
 
-## 关键机制
+## 设备动作与目标核验
 
-### 导航（StepAgent，源自 Open-AutoGLM 架构）
+坐标使用 0–999 空间，护栏先校验再转换到设备分辨率。Tap 自报 intent /
+ target_text 通过后，uiautomator 独立读取真实控件文本，命中写操作关键词
+则拒绝；控件树不可用也拒绝。Swipe 只允许近垂直滚动，避开两侧手势区。
+Type 仅由调用者在看图确认的搜索框使用，中文经 ADBKeyBoard 输入，结束或
+失败后恢复原输入法。护栏不能证明任意点击无副作用，仍需要调用者看图判断。
 
-- 视觉模型看截图输出 `<think>` + `do(action="Tap", element=[x,y])` DSL，
-  解析支持引号转义（`text="他说 \"hi\""`），也接受等价 JSON 动作对象；
-- 坐标使用 0-999 归一化空间，护栏校验范围后按真实分辨率换算并夹紧，
-  跨机型通用；
-- 动作携带 intent / target_text 交 ActionGuard 判定；被拦截的动作以
-  [GUARD] 消息反馈，模型换只读路径重新规划；
-- Tap 在自报判定通过后，还经 uiautomator 控件树独立核验：取点击
-  坐标处内层节点与可点击祖先的 text/content-desc（按钮级祖先含子树
-  全部文本，覆盖"icon + 兄弟文字"式按钮；整页大容器只算自身文本），
-  命中写操作关键词即拒绝。这一层与模型输出无关，是安全域隔离的关键；
-  dump 不可用时降级为仅自报判定（`AVC_NAV_UI_VERIFY=0` 可关闭）；
-- Swipe 被限制为近垂直滚动（ScrollGuard）：纵向位移 ≥ 10% 屏高、
-  横向位移 ≤ 纵向的 35%、起点避开左右手势区——横滑删除/滑块确认等
-  写手势一律拒绝，采集场景的导航翻页只需要上下滚动；
-- 动作校验严格先于坐标解引用：缺 element / 坐标非法由护栏以 [GUARD]
-  反馈重新规划，不会 KeyError 冒泡终止会话；
-- adb 命令失败抛 AdbCommandError，以 [ACTION_FAILED] 观察反馈模型，
-  连续失败（默认 3 次）以 device_error / action_failed 终止；
-- 文本输入走 input_text_safe 事务：切换 ADB Keyboard → 输入 →
-  无论成败恢复原输入法；
-- 历史消息中图片即用即弃，只留文本，控制上下文成本；
-- run() 返回 NavigationResult：finish 后目标页核验（未通过继续导航），
-  最大步数 / 设备故障 / 护栏连续拦截均为 success=False。
+导航观察图不计入采集屏数；capture 是调用者看图核验目标后的明确采集决定，
+首次 capture 记录 caller_verified 导航结果。脚本不能证明调用者实际看过图片，
+该行为由 skill 工作流要求。导航失败 finish 使用 navigation_failed，保持
+navigation.success=false、0 张采集截图，校验器验证此形态。
 
-### 提取（ExtractAgent）
+## 持久状态与停止
 
-- 单屏一次 VLM 调用，temperature=0.1；
-- 提示词注入日历上下文（今天/昨天/本周日期），把截图相对时间换算成
-  绝对时间——时间字段的溯源精度由此决定；
-- JSON 解析容忍代码围栏与杂质，失败自动重试，重试用尽则该屏标记
-  `extraction_failed` 并留在台账中。
+每个命令从 manifest 重建 SessionStore 的计数、条目 ID、去重窗口与导航状态，
+核对历史截图哈希和提取统计。命令串行执行，不支持同一会话并发操作。
+有待提取截图时禁止观察、动作与再次 capture；先登记成功或失败结果。
+同屏提取不能覆盖，已收尾会话拒绝恢复。崩溃后有文件但缺对应台账的中间状态
+会拒绝继续写入，需要人工审计后另建会话，不自动猜测或修复证据。
 
-### 去重与停止
+max-screens 和 max-actions 是脚本上限；动作尝试（包括拒绝/设备错误）均计数。
+调用者根据用户范围、画面位移与新增统计决定提前结束，连续三次失败时收尾。
+默认流程的停止判断由调用者做，脚本不会调用额外模型或自动翻页。
 
-去重模式按采集对象形态选择（`--dedup`，`auto` 按 App 判定并记入
-session.json 的 `dedup_mode`）：
+## 去重与证据
 
-- **chat（微信等聊天采集）**：同文本远距重现=真实重复，必须保留。
-  聊天类条目（message/comment/system）指纹并入 time_hint（有则必并），
-  只对最近 5 屏做滑窗判重——窗口内的重复是 60% 重叠造成的重采（普通
-  内容最多跨 3 屏，超长消息 / 长图文 / 大卡片可跨 4~5 屏，窗口取 5
-  留余量），窗口外的相同内容视为真实重复、保留入库。非聊天类条目
-  （卡片有标题）仍全局判重。
-- **global（红果免费短剧 / 小红书等信息流采集）**：同内容远距重现=
-  重复曝光（榜单回看、推荐流重推、翻页回弹），不存在"真实重复"的
-  语义。全部条目按内容全局判重，指纹不含 time_hint——时间抖动不应
-  放过重复。auto 模式下除微信外的 App 默认 global。
+chat 模式对消息类（含微信 text/image/voice/video/link/sticker/system）使用
+最近 5 屏滑窗，指纹包含可见 time_hint；窗口外相同内容作为真实重复保留。
+global 模式对信息流全局去重，指纹不含时间。auto 以微信为 chat，其他为 global。
 
-- 停止 = "连续 N 屏零新条目"且画面位移消失（相邻屏 8x8 感知哈希汉明
-  距离 ≤ 4，说明翻页已无效），或宽限屏数（默认 +2）用尽；`--max-screens`
-  仍是硬上限。长图 / 大卡片 / 占位 UI 连续几屏没有新条目时，只要画面
-  还在正常位移就继续采集，不再被误判为信息边界。
+所有条目由 SessionStore 添加 evidence（截图路径、SHA-256、屏号、时间、模型标识）。
+模型标识默认 caller-vision，仅说明由调用者提取；已知真实型号时可通过 --model
+记录。截图先保存再提取，失败屏也保留提取文件与错误台账。证据格式和校验
+见 [data-layout.md](data-layout.md)。
 
-### 溯源链
+## 可选 API 兼容模式
 
-```
-index.json 条目 ──evidence.screenshot──▶ screenshots/screen-NNNN.png
-                     evidence.sha256  ──▶ 与文件实际 SHA-256 比对
-extracted/screen-NNNN.json ──▶ 模型原始输出（审计提取行为）
-manifest.jsonl ──▶ 全部事件的时序台账
-```
-
-`inspect_session.py` 独立于采集流程，可对任何目录做离线校验。
-
-## 扩展点
-
-- **新 App**：`prompts.py` 的 `APP_NAV_TEMPLATES` / `APP_EXTRACT_HINTS`
-  加两条描述即可，无需改代码逻辑；
-- **新设备后端（iOS 等）**：`collector/adb` 是唯一的设备抽象层，实现同
-  接口（capture/tap/swipe/input_text_safe/back/home/launch_app）即可替换；
-- **新存储后端**：`SessionStore` 与采集流程解耦，可派生 SQLite/远端版本，
-  但"先证据后提取"的顺序与不可变台账是规范要求。
+[API 兼容入口](api-compatibility.md)使用 collect.py、StepAgent 和 ExtractAgent，
+仅在用户明确选择时安装 requirements-api.txt 并配置模型服务。它保留 DSL/JSON
+导航动作解析、模型目标页核验、JSON 修复重试与感知哈希停止机制。
+OpenAI SDK 延迟到客户端实例化才导入，因此不影响默认 caller 入口。
+两种模式共享 ADB、护栏、提取提示词和证据存储，不混用会话。

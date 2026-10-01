@@ -145,11 +145,14 @@ def build_extract_prompt(app: str, task: str) -> str:
         diff = current_weekday - i
         if diff < 0:
             diff += 7
-        if diff == 0:
-            diff = 7  # 今天则取上周同一天
         week_dates[weekday_short[i]] = (today - timedelta(days=diff)).strftime("%Y年%m月%d日")
 
-    app_hint = APP_EXTRACT_HINTS.get(app, "这是某个手机 App 的界面截图。")
+    app_key = "wechat" if app == "微信" else app.lower()
+    app_hint = APP_EXTRACT_HINTS.get(app_key, "这是某个手机 App 的界面截图。")
+    item_types = {
+        "wechat": "text|image|voice|video|link|sticker|system",
+        "xiaohongshu": "note|comment",
+    }.get(app_key, "message|note|comment|product|profile|search_result|system|other")
 
     return f"""请从这张手机截屏中提取所有可见的信息条目，输出结构化 JSON。
 
@@ -158,15 +161,16 @@ def build_extract_prompt(app: str, task: str) -> str:
 采集任务: {task}
 今天是: {today_str} {weekday}
 昨天是: {yesterday_str}
-本周日期对照: 周一={week_dates["周一"]}, 周二={week_dates["周二"]}, 周三={week_dates["周三"]}, 周四={week_dates["周四"]}, 周五={week_dates["周五"]}, 周六={week_dates["周六"]}, 周日={week_dates["周日"]}
+最近一次对应星期（含今天，不晚于今天）: 周一={week_dates["周一"]}, 周二={week_dates["周二"]}, 周三={week_dates["周三"]}, 周四={week_dates["周四"]}, 周五={week_dates["周五"]}, 周六={week_dates["周六"]}, 周日={week_dates["周日"]}
 
 ## 界面说明
 {app_hint}
 
 ## 提取规则
 1. 从上到下逐条扫描，屏幕上每个独立的信息条目（消息/笔记/评论/商品等）各记一条。
-2. 时间字段 time_hint：按截图原文，相对时间必须换算成 "yyyy年MM月dd日 HH:mm" 绝对格式；
-   屏幕上不可见时间写 null。
+2. 时间字段 time_hint：按截图原文，明确的相对时间换算成 "yyyy年MM月dd日 HH:mm" 绝对格式；
+   星期对照仅为日历参考，不能证明旧记录的日期。日期不能唯一确定或不可见时写 null，
+   可将原始可见时间文字保留在 extra.time_raw，不猜测年份或日期。
 3. 文字逐字准确，保留标点与换行；无法辨认的字符用 ? 代替。
 4. 看不清或不确定的内容：confidence 填 "low"，并在对应字段用 [不清晰] 占位。
 5. 只记录真实可见的内容，禁止猜测、禁止编造、禁止遗漏。
@@ -178,7 +182,7 @@ def build_extract_prompt(app: str, task: str) -> str:
   "screen_summary": "一句话概括本屏内容",
   "items": [
     {{
-      "type": "message|note|comment|product|profile|search_result|system|other",
+      "type": "{item_types}",
       "title": "标题或 null",
       "sender": "作者/发送者昵称或 null",
       "text": "主要内容文本",

@@ -74,6 +74,9 @@ class SessionStore:
         vlm_model: str,
         nav_model: str,
         dedup_mode: str = "chat",
+        execution_mode: str | None = None,
+        max_screens: int | None = None,
+        max_actions: int | None = None,
     ) -> SessionStore:
         """创建新会话目录并写入元数据与首条台账事件。
 
@@ -107,9 +110,68 @@ class SessionStore:
             "dedup_mode": dedup_mode,
             "started_at": started.astimezone().isoformat(timespec="seconds"),
         }
+        if execution_mode is not None:
+            metadata.update(execution_mode=execution_mode, max_screens=max_screens,
+                            max_actions=max_actions)
         store._session_metadata = metadata
         _write_json(session_dir / "session.json", metadata)
         store._manifest({"event": "session_started", **metadata})
+        return store
+
+    @classmethod
+    def resume(cls, session_dir: Path) -> SessionStore:
+        """恢复尚未收尾的会话，按台账重建去重状态，不改写历史证据。"""
+        store = cls(session_dir)
+        store._session_metadata = json.loads((session_dir / "session.json").read_text("utf-8"))
+        store.dedup = Deduplicator(mode=store._session_metadata.get("dedup_mode", "chat"))
+        events = [json.loads(line) for line in store.manifest_path.read_text("utf-8").splitlines()
+                  if line.strip()]
+        if (session_dir / "index.json").exists() or any(
+            event.get("event") == "session_finished" for event in events
+        ):
+            raise ValueError("会话已收尾，不能继续采集或改写证据")
+        screenshots: dict[int, dict] = {}
+        extracted_screens: set[int] = set()
+        for event in events:
+            kind = event.get("event")
+            if kind == "screenshot":
+                screen = event["screen"]
+                if type(screen) is not int or screen != store.screen_count + 1:
+                    raise ValueError("截图台账屏号不连续，不能恢复会话")
+                if _file_sha256(session_dir / event["path"]) != event["sha256"]:
+                    raise ValueError("历史截图哈希不一致，不能恢复会话")
+                screenshots[screen] = event
+                store.screen_count = screen
+            elif kind in {"items", "extraction_failed"}:
+                screen = event["screen"]
+                if screen not in screenshots or screen in extracted_screens \
+                        or event["screenshot_sha256"] != screenshots[screen]["sha256"]:
+                    raise ValueError("提取文件与台账不一致，不能恢复会话")
+                path = store.extracted_dir / f"screen-{screen:04d}.json"
+                if event.get("extraction_sha256") is not None \
+                        and _file_sha256(path) != event["extraction_sha256"]:
+                    raise ValueError("历史提取文件哈希不一致，不能恢复会话")
+                payload = json.loads(path.read_text("utf-8"))
+                if kind == "items":
+                    stats, item_ids = store._admit_items(screen, screenshots[screen], payload["items"])
+                    if item_ids != event["item_ids"] or any(
+                        stats[key] != event[key] for key in ("extracted", "new", "duplicates")
+                    ):
+                        raise ValueError("提取文件与台账不一致，不能恢复会话")
+                else:
+                    if payload.get("items") != [] or payload.get("error") != event["error"]:
+                        raise ValueError("失败记录与台账不一致，不能恢复会话")
+                    store.extract_failures_total += 1
+                extracted_screens.add(screen)
+            elif kind == "navigation":
+                store._navigation = {key: event[key] for key in
+                                     ("success", "reason", "message", "steps", "current_app")}
+        expected_screenshots = {session_dir / event["path"] for event in screenshots.values()}
+        expected_extractions = {store.extracted_dir / f"screen-{screen:04d}.json"
+                                for screen in extracted_screens}
+        if set(store.screenshots_dir.iterdir()) != expected_screenshots \
+                or set(store.extracted_dir.iterdir()) != expected_extractions:
+            raise ValueError("发现未登记的证据文件，不能恢复或覆盖；请审计后另建会话")
         return store
 
     # ------------------------------------------------------------ screenshots
@@ -165,6 +227,18 @@ class SessionStore:
             payload["repair_response"] = extraction["repair_response"]
         _write_json(self.extracted_dir / f"screen-{screen:04d}.json", payload)
 
+        stats, new_ids = self._admit_items(screen, screenshot_record, items)
+        self._manifest({
+            "event": "items", "screen": screen,
+            "screenshot_sha256": screenshot_record["sha256"],
+            "extraction_sha256": _file_sha256(self.extracted_dir / f"screen-{screen:04d}.json"),
+            **stats, "item_ids": new_ids,
+        })
+        return stats
+
+    def _admit_items(self, screen: int, screenshot_record: dict[str, Any],
+                     items: list[dict[str, Any]]) -> tuple[dict[str, int], list[str]]:
+        """更新内存中的去重条目与统计；恢复会话时复用，不产生写盘副作用。"""
         new_ids: list[str] = []
         for item in items:
             if not self.dedup.admit(screen, item):
@@ -200,16 +274,7 @@ class SessionStore:
         self.extracted_total += extracted
         self.duplicates_total += extracted - new
 
-        self._manifest({
-            "event": "items",
-            "screen": screen,
-            "screenshot_sha256": screenshot_record["sha256"],
-            "extracted": extracted,
-            "new": new,
-            "duplicates": extracted - new,
-            "item_ids": new_ids,
-        })
-        return {"extracted": extracted, "new": new, "duplicates": extracted - new}
+        return {"extracted": extracted, "new": new, "duplicates": extracted - new}, new_ids
 
     def save_extraction_failure(
         self,
@@ -241,6 +306,7 @@ class SessionStore:
             "event": "extraction_failed",
             "screen": screen,
             "screenshot_sha256": screenshot_record["sha256"],
+            "extraction_sha256": _file_sha256(self.extracted_dir / f"screen-{screen:04d}.json"),
             "error": message,
         })
 

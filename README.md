@@ -7,8 +7,8 @@ powered by a vision language model.
 
 ---
 
-它通过 ADB 控制一台真实的 Android 手机，用视觉大模型（VLM）像人一样打开 App、
-搜索、翻页、截图，并把屏幕内容抽取为结构化数据。与"协议破解 / 注入 Hook"类
+它通过 ADB 控制一台真实的 Android 手机，直接使用调用者自身的视觉能力打开 App、
+搜索、翻页、截图，并把屏幕内容抽取为结构化数据，无需 API Key。与"协议破解 / 注入 Hook"类
 方案不同，本项目 **不碰 App 进程、不做逆向、不需要 Root**，只依赖屏幕截图，
 因此天然适配绝大多数 App 与系统版本。
 
@@ -25,54 +25,30 @@ powered by a vision language model.
 支付 / 删除 / 授权"等写操作语义即拒绝执行、反馈模型重新规划；Tap 还会
 经 **uiautomator 控件树独立核验**——读取点击坐标处真实控件的文本再查
 一次关键词，与模型自报无关，模型把"发送"按钮谎报成普通按钮也拦得住
-（控件树不可用的页面自动降级为仅自报判定并记录日志）。Swipe 被限制为
+（默认流程在控件树不可用时拒绝 Tap）。Swipe 被限制为
 近垂直滚动——横向滑动会触发列表项删除 / 滑块确认等写操作，一律拒绝。
-连续拦截则终止导航。这是纵深防御而非形式化验证——动作集合不含写原语
-正是最后的兜底。
+调用者在连续三次失败时收尾。这些护栏仍需调用者结合截图判断动作语义。
 
 ## 功能特性
 
-- 🤖 **VLM 双角色**：导航 Agent（`do(action=...)` DSL，兼容 JSON 动作）负责
-  在 App 内走到目标页面；提取 Agent 负责把单屏截图转成结构化 JSON。
-- 📱 **通用 App 支持**：内置微信、小红书攻略（`references/`），其他 App 按
-  通用模板即可扩展。
-- 🛡️ **只读护栏 + 导航核验**：ActionGuard 拦截写操作语义的点击（坐标
-  合法性校验 + 模型自报语义 + uiautomator 控件树独立核验三层判定）；
-  导航返回结构化结果（成功 / 失败原因 / 步数 / 当前 App），finish 后由
-  模型核验"当前页是否满足目标"，导航失败立即终止会话——不把错误页面
-  的数据当成合法证据入库。
-- 🔍 **全程证据留存**：截屏 → 提取 → 去重 → 台账，结构化目录保存，一条不漏。
-- 🧾 **溯源可校验**：SHA-256 完整性校验，`manifest.jsonl` + `index.json` 双层索引；
-  所有落盘走 tmp + fsync + 原子 rename，manifest 逐条 fsync，进程中断不留半个文件。
-- 🔁 **智能停止**：内容零新增 + 画面位移消失（感知哈希）双重判据 + 宽限屏数
-  + 最大屏数上限——长图 / 大卡片跨屏不再被误判为"已到边界"。
-- 🧹 **按 App 形态去重**：微信聊天用滑窗去重（同文本出窗后视为真实重复，
-  不误杀"张三：收到"×2）；红果免费短剧 / 小红书等信息流用全局去重
-  （同内容远距重现即重复曝光）。`--dedup auto` 按 App 自动判定，可显式
-  指定 `chat` / `global`。
-- 🌐 **任意 OpenAI 兼容视觉模型**：提取与导航模型均可通过环境变量配置，
-  填入任意支持视觉的模型即可。
+- **调用者直接看图**：使用调用 skill 的助手自身视觉能力完成导航和提取，无需 API Key、模型端点或模型 SDK；调用者必须能读取本地 PNG。
+- **ADB 与只读护栏**：脚本只执行设备操作，Tap 经控件树核验；无法核验时拒绝点击，Swipe 限制为近垂直滚动。
+- **截图证据与溯源**：截图先落盘，调用者生成 JSON 后登记；条目携带图片路径、SHA-256、屏号与模型标识。
+- **持久会话**：命令之间从台账恢复去重状态；拒绝覆盖同屏提取结果、改写已收尾会话或在上一屏未登记时翻页。
+- **按内容形态去重**：微信聊天使用滑窗去重，其他信息流默认全局去重，可用 `--dedup chat/global` 覆盖。
+- **可离线校验**：`inspect_session.py` 复核截图哈希、条目来源与会话汇总。
 
 ## 系统架构
 
+```text
+调用者的视觉/推理能力（看本地 PNG → 决定动作 / 生成提取 JSON）
+          │ action.json / result.json                 ▲ 截图路径与提示词
+          ▼                                         │
+caller_collect.py → ActionGuard → ADB → Android 手机 → 原始 PNG
+          └──────── SessionStore → 台账 / 去重 / index.json
 ```
-                 ┌──────────────────────────────────────────┐
-                 │            collect.py (CLI)              │
-                 └───────────────┬──────────────────────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────────┐
-         ▼                       ▼                           ▼
-  StepAgent 导航           SessionStore 证据存储        ExtractAgent 提取
-  (DSL/JSON 解析           (screenshots/manifest         (VLM, JSON)
-   + ActionGuard 护栏        /原子落盘)
-   + 目标页核验)                   ▲                           │
-         │                       │                           │
-         ▼                       │                           │
-  ┌─────────────┐         ┌──────┴───────┐            ┌──────┴──────┐
-  │ ADB 设备层   │──────▶ │ Android 手机  │──截屏────▶ │ VLM 云端 API │
-  │ tap/swipe/.. │         └──────────────┘            └─────────────┘
-  └─────────────┘
-```
+
+默认脚本不请求模型服务。旧 `collect.py` 作为[可选 API 兼容模式](docs/api-compatibility.md)保留。
 
 ## 设备准备：ADB 与输入法
 
@@ -105,7 +81,7 @@ ADB 原生的 `input text` 只支持 ASCII，输入中文会直接失败：
 adb shell input text '你好'   # ✗ 不支持 Unicode
 ```
 
-导航 Agent 需要在搜索框输入中文（微信群名、小红书关键词）时，借助
+调用者需要在搜索框输入中文（微信群名、小红书关键词）时，借助
 [ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard)——一个专为自动化测试设计的
 **虚拟键盘输入法**。它没有可见的键盘界面，而是常驻监听系统广播：adb 发一条
 广播，它就把广播携带的文本"敲"进当前聚焦的输入框，因此能输入中文、Emoji
@@ -114,7 +90,7 @@ adb shell input text '你好'   # ✗ 不支持 Unicode
 **安装与启用：**
 
 1. 下载 APK：从 [Releases](https://github.com/senzhk/ADBKeyBoard/releases) 下载
-   （Android 16 设备选 v2.5-dev，其余选 v2.4-dev），执行
+   （按设备兼容性选择版本），执行
    `adb install ADBKeyboard.apk`；也可源码构建（`./gradlew installDebug`）；
 2. 启用输入法（二选一）：
    - 手机上：设置 → 系统 → 语言和输入法 → 勾选启用 **ADBKeyBoard**；
@@ -147,68 +123,37 @@ ADBKeyBoard 还提供其他广播动作，手工调试时可用（完整说明�
 | `ADB_CLEAR_TEXT` | — | 清空输入框 |
 
 > 未安装的影响：仅无法完成"搜索进入"类导航（Type 动作会失败并把原因反馈给
-> 导航模型），纯点击浏览类采集不受影响；也可手动把手机停到目标页面后用
-> `--no-navigate` 采集。
+> 调用者），纯点击浏览类采集不受影响；也可手动定位后通过 observe 看图、
+> capture 保存证据。
 
 ## 快速开始
 
-### 0. 环境
-
-- Python 3.10+，macOS / Linux / Windows 均可（运行采集端）
-- `adb` 在 PATH 中，一台已开启 USB 调试的 Android 手机，目标 App 已登录
-- 一个 OpenAI 兼容的视觉模型 API Key
+需要 Python 3.10+、Pillow、已连接且目标 App 已登录的 Android 手机，以及**具备视觉能力、能打开本地截图的调用者**。不需要配置任何模型 API Key。
 
 ```bash
-git clone https://github.com/<you>/app-vision-collector.git
-cd app-vision-collector
-pip install -r requirements.txt
-
-export AVC_API_KEY="sk-..."            # 任意 OpenAI 兼容视觉模型服务的 API Key
-# export AVC_API_BASE="https://<openai-compatible-endpoint>/v1"
-# export AVC_VLM_MODEL="<vision-model>" # 提取模型，任意支持视觉的模型即可
-# export AVC_NAV_MODEL="<vision-model>" # 导航模型，任意支持视觉的模型即可
-```
-
-### 1. 自检
-
-```bash
-python3 scripts/collect.py --check
-```
-
-### 2. 采集
-
-```bash
-# 微信群聊（--task 会原样作为导航任务，必须写全 App 与目标；
-# 微信翻历史由采集器自动用手指下滑完成）
-python3 scripts/collect.py --app wechat --target "AI 交流群" \
-  --task "打开微信，进入群聊「AI 交流群」，采集当前可见的聊天消息，再向历史方向翻页采集更早的消息" \
+pip install -r "<skill_dir>/requirements.txt"
+python3 "<skill_dir>/scripts/caller_collect.py" check
+python3 "<skill_dir>/scripts/caller_collect.py" start \
+  --app wechat --target "AI 交流群" \
+  --task "打开微信，进入群聊「AI 交流群」，采集当前消息及更早历史的发送者、内容与可见时间" \
   --max-screens 20
-
-# 微信当前历史位置向更新消息采集，或浏览朋友圈：显式覆盖手指方向
-python3 scripts/collect.py --app wechat --no-navigate --scroll-direction up \
-  --task "采集当前页面的信息并继续浏览下方内容" --max-screens 10
-
-# 小红书搜索
-python3 scripts/collect.py --app xiaohongshu --target "手机摄影技巧" \
-  --task "打开小红书，搜索「手机摄影技巧」并进入搜索结果页，逐屏浏览并采集笔记标题、作者、摘要" \
-  --max-screens 10
-
-# 红果免费短剧等信息流 App：全局内容去重（auto 即可自动判定）
-python3 scripts/collect.py --app 红果免费短剧 --no-navigate \
-  --task "采集当前榜单的短剧标题与作者" --max-screens 10
-
-# 通用：手机手动停到目标页面，只做"截图+提取"
-python3 scripts/collect.py --app generic --no-navigate \
-  --task "采集当前屏幕上的信息" --max-screens 5
 ```
 
-### 3. 查看与校验
+后续命令使用 start 返回的绝对会话路径：
 
 ```bash
-python3 scripts/inspect_session.py collections/2026-09-27/<session-id>
-
-jq '.items[0]' collections/2026-09-27/<session-id>/index.json
+python3 "<skill_dir>/scripts/caller_collect.py" observe "<session_dir>"
+# 调用者打开返回的 PNG、核验目标；需要导航时生成动作 JSON 并用 action 执行
+python3 "<skill_dir>/scripts/caller_collect.py" capture "<session_dir>"
+# 调用者打开这次采集的 PNG，按返回的 prompt 生成外部临时 result.json
+python3 "<skill_dir>/scripts/caller_collect.py" record "<session_dir>" \
+  --result-file "<scratch_dir>/result.json"
+# 需要更多屏时：action 滚动 → observe 看图 → capture 看证据图 → record
+python3 "<skill_dir>/scripts/caller_collect.py" finish "<session_dir>" --reason completed
+python3 "<skill_dir>/scripts/inspect_session.py" "<session_dir>"
 ```
+
+完整动作参数、提取 JSON 与异常收尾见 [调用者工作流](references/caller-workflow.md)。手机已手动定位时同样先 observe 看图核验；单屏采集在首次 record 后 finish。默认最多 20 屏、40 次动作尝试，持续三次失败由调用者及时收尾。
 
 一条信息的溯源样例（`index.json`）：
 
@@ -216,7 +161,7 @@ jq '.items[0]' collections/2026-09-27/<session-id>/index.json
 {
   "item_id": "itm_000007",
   "app": "wechat",
-  "type": "message",
+  "type": "text",
   "sender": "王小明",
   "text": "明晚八点健身房见",
   "time_hint": "2026年09月27日 20:41",
@@ -225,7 +170,7 @@ jq '.items[0]' collections/2026-09-27/<session-id>/index.json
     "sha256": "3f7a…e9c1",
     "captured_at": "2026-09-27T20:41:32+08:00",
     "screen_index": 3,
-    "model": "<vision-model>",
+    "model": "caller-vision",
     "prompt_version": "extract-v1"
   }
 }
@@ -238,6 +183,7 @@ collections/
 └── 2026-09-27/
     └── 20260927-153000-483921-a1b2c3d4_wechat_AI交流群/
         ├── session.json       # 会话元数据
+        ├── navigation/        # 看图导航记录（不计入采集屏数）
         ├── screenshots/       # 原始截屏（证据本体，只增不改）
         ├── extracted/         # 每屏提取的原始模型输出
         ├── manifest.jsonl     # 追加式事件台账
@@ -252,9 +198,11 @@ collections/
 app-vision-collector/
 ├── SKILL.md                 # Skill 定义（agent 入口）
 ├── README.md
-├── requirements.txt
+├── requirements.txt        # 默认仅 Pillow
+├── requirements-api.txt    # 可选 API 兼容依赖
 ├── scripts/
-│   ├── collect.py           # 采集 CLI
+│   ├── caller_collect.py    # 默认入口：调用者直接看图
+│   ├── collect.py           # 可选 API 兼容入口
 │   ├── inspect_session.py   # 溯源校验 CLI
 │   └── collector/           # 核心包
 │       ├── adb/             # ADB 设备层（截图/输入/连接/输入法事务）

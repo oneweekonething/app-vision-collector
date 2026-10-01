@@ -10,8 +10,6 @@ import json
 import re
 from typing import Any
 
-from openai import OpenAI
-
 from collector import adb
 from collector.agent.prompts import REPAIR_PROMPT, build_extract_prompt
 from collector.agent.step_agent import screenshot_b64
@@ -30,6 +28,8 @@ class ExtractAgent:
     """视觉提取智能体。"""
 
     def __init__(self, config: CollectorConfig, app: str, task: str):
+        from openai import OpenAI
+
         self.config = config
         self.app = app
         self.task = task
